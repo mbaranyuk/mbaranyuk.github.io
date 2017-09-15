@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html>
+   <head>
+      <meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+
+      <title>Empeek test app</title>
+
+      <script type="text/javascript" src="https://ajax.googleapis.com/ajax/libs/angularjs/1.5.6/angular.min.js"></script>
+      <script type="text/javascript" src="js/app.js"></script>
+      <link rel="stylesheet" href="css/style.css">
+   </head>
+   <body ng-app="empeekApp">
+      <div class="main" ng-controller="MainCtrl">
+         <div class="side">
+            <h1>Main</h1>
+            <p class="side-item">Overview</p>
+         </div>
+
+         <div class="content">
+            <div class="card items">
+               <h1>Items</h1>
+
+               <form ng-submit="addItem()">
+                  <input class="name-input" type="text" placeholder="Type name here..." ng-model="itemText">
+                  <input class="button-submit" type="submit" value="Add new">
+               </form>
+
+               <ul class="item-list" ng-init="loadItems()">
+                  <li class="item" ng-repeat="item in items track by $index" ng-click="setSelected($index)" ng-class="{'active': $index == activeItem}">
+                     <span class="item-text">{{item.text}}</span>
+                     <span class="item-hint" ng-if="item.comments.length">{{item.comments.length}}</span>
+                     
+                     <button class="button-delete" ng-click="deleteItem($index)">Delete</button>
+                  </li>
+               </ul>
+            </div>
+
+            <div class="card comments">
+               <h1>Comments <span ng-if="activeItem >= 0">#{{activeItem+1}}</span></h1>
+
+               <ul class="item-list">
+                  <li class="item" ng-repeat="c in items[activeItem].comments track by $index">
+                     <div class="avatar"></div>
+                     <span class="item-text">{{c}}</span>
+                  </li>
+               </ul>
+
+               <div class="comment-footer">
+                  <div class="avatar"></div>
+                  <input type="text" class="name-input" ng-model="commentText" ng-keydown="addComment($event)" 
+                  style="float: right; width: 86%;" placeholder="Type and press ENTER">
+               </div>
+            </div>
+         </div>
+
+      </div>
+   </body>
+</html>
