@@ -1,5 +1,5 @@
 // qlTag service worker — cache-first, повністю офлайн (§7 SPEC.md).
-const CACHE_NAME = 'qltag-v1.3';
+const CACHE_NAME = 'qltag-v1.4';
 const ASSETS = [
   './',
   './index.html',
