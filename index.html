@@ -395,6 +395,13 @@
   // оригінал відновлюється підстановкою sOldPart назад у поточний текст.
   let oUndoDiff = null;
 
+  // Знімок тексту на момент входу в режим масового перейменування (§6.6):
+  // поки bRenameModeActive === true, посимвольні правки в oUndoDiff не
+  // записуються (це не окремі "зміни" з погляду користувача), а весь rename
+  // — від цього знімка до фінального тексту після масової заміни — стає
+  // ОДНИМ undo-diff'ом у commitRenameMode().
+  let sTextBeforeRenameMode = null;
+
   // Мінімальний diff двох рядків через спільний префікс/суфікс: повертає
   // { nStart, sOldPart, sNewPart } — де саме розходяться sOld і sNew.
   function getTextDiff_ByOldAndNewText(sOld, sNew) {
@@ -754,17 +761,34 @@
     return { sText: sResult, nCaretOffset, nReplacedCount };
   }
 
+  // Геометрія рамки перейменування, закешована між викликами: nLeft/nWidth/
+  // nHeight й "сирий" nTop (без урахування scrollTop) залежать лише від
+  // тексту й позиції слова в ньому, а не від скролу. На scroll-евенті
+  // перераховувати їх через getTextRangeRect_ByOffset (мірний div + reflow)
+  // дорого й не встигає за швидким скролом — звідси "лаг" рамки. Замість
+  // цього scroll лише дешево підставляє новий scrollTop у вже готову
+  // геометрію (repositionRenameBoxForScroll нижче).
+  let oRenameBoxGeom = null;
+
   function positionRenameBox(nStart, nEnd) {
-    const r = getTextRangeRect_ByOffset(nStart, nEnd);
+    oRenameBoxGeom = getTextRangeRect_ByOffset(nStart, nEnd);
     elRenameBox.style.display = 'block';
-    elRenameBox.style.left = r.nLeft + 'px';
-    elRenameBox.style.top = (r.nTop - elEditor.scrollTop) + 'px';
-    elRenameBox.style.width = r.nWidth + 'px';
-    elRenameBox.style.height = r.nHeight + 'px';
+    elRenameBox.style.left = oRenameBoxGeom.nLeft + 'px';
+    elRenameBox.style.top = (oRenameBoxGeom.nTop - elEditor.scrollTop) + 'px';
+    elRenameBox.style.width = oRenameBoxGeom.nWidth + 'px';
+    elRenameBox.style.height = oRenameBoxGeom.nHeight + 'px';
+  }
+
+  // Дешевий "хвіст" positionRenameBox для scroll: без реквеста до mirror,
+  // лише зсуває вже закешовану геометрію на поточний scrollTop.
+  function repositionRenameBoxForScroll() {
+    if (!oRenameBoxGeom) return;
+    elRenameBox.style.top = (oRenameBoxGeom.nTop - elEditor.scrollTop) + 'px';
   }
 
   function hideRenameBox() {
     elRenameBox.style.display = 'none';
+    oRenameBoxGeom = null;
   }
 
   function startRenameMode() {
@@ -772,6 +796,7 @@
     const oRange = getWordRange_ByCaretPosition(oEditorState.sText, nCaret);
     if (!oRange.sWord) return;
     hideInfoPanel();
+    sTextBeforeRenameMode = oEditorState.sText;
     oEditorState.bRenameModeActive = true;
     oEditorState.sOriginalWord = oRange.sWord;
     oEditorState.oWordRange = { nStart: oRange.nStart, nEnd: oRange.nEnd };
@@ -804,6 +829,13 @@
     if (!sNewWord || sNewWord === sOriginalWord) return;
 
     const oResult = setIdentifier_RenamedEverywhere(oEditorState.sText, sOriginalWord, sNewWord, oRange);
+    // Весь rename (усі заміни разом) — одна логічна зміна: undo-diff рахуємо
+    // від тексту ДО входу в режим перейменування, а не від щойно набраного
+    // слова, інакше "←" відкотить лише останню набрану літеру на позиціях,
+    // які вже "поїхали" через масову заміну (§6.6).
+    if (sTextBeforeRenameMode !== null) {
+      oUndoDiff = getTextDiff_ByOldAndNewText(sTextBeforeRenameMode, oResult.sText);
+    }
     oEditorState.sText = oResult.sText;
     elEditor.value = oResult.sText;
     elEditor.setSelectionRange(oResult.nCaretOffset, oResult.nCaretOffset);
@@ -1322,7 +1354,12 @@
   // ---------------------------------------------------------------------
   elEditor.addEventListener('input', () => {
     const sNewText = elEditor.value;
-    oUndoDiff = getTextDiff_ByOldAndNewText(oEditorState.sText, sNewText);
+    // У режимі масового перейменування посимвольні правки не пишемо в
+    // oUndoDiff — єдиний undo-diff для всього rename формує commitRenameMode
+    // (див. sTextBeforeRenameMode вище, §6.6).
+    if (!oEditorState.bRenameModeActive) {
+      oUndoDiff = getTextDiff_ByOldAndNewText(oEditorState.sText, sNewText);
+    }
     oEditorState.sText = sNewText;
     markUnsaved();
     if (oEditorState.bRenameModeActive) {
@@ -1336,12 +1373,20 @@
   });
 
   elEditor.addEventListener('scroll', syncGutterScroll);
+
+  // рамка перейменування — sibling-елемент textarea, тому не скролиться
+  // разом з текстом; синхронізуємо на кожному скролі (§6.6). rAF коалесує
+  // серію scroll-евентів (тач-скрол шле їх пачками) в один дешевий апдейт
+  // на кадр — без цього швидкий скрол "лагав", бо repositionRenameBox
+  // раніше на кожен тік ганяв важкий mirror-reflow.
+  let bRenameBoxScrollScheduled = false;
   elEditor.addEventListener('scroll', () => {
-    // рамка перейменування — sibling-елемент textarea, тому не скролиться
-    // разом з текстом; перепозиціонуємо її при кожному скролі (див. §6.6).
-    if (oEditorState.bRenameModeActive && oEditorState.oWordRange) {
-      positionRenameBox(oEditorState.oWordRange.nStart, oEditorState.oWordRange.nEnd);
-    }
+    if (!oEditorState.bRenameModeActive || bRenameBoxScrollScheduled) return;
+    bRenameBoxScrollScheduled = true;
+    requestAnimationFrame(() => {
+      bRenameBoxScrollScheduled = false;
+      repositionRenameBoxForScroll();
+    });
   });
 
   elEditor.addEventListener('click', onEditorClick);
