@@ -21,6 +21,7 @@
   :root {
     --bg: #111111;
     --fg: #eeeeee;
+    --danger: #ff6b6b;
     --line-height: 22px;
     --font-size: 15px;
     --gutter-width: 44px;
@@ -29,6 +30,7 @@
   :root[data-theme="light"] {
     --bg: #f4f4f0;
     --fg: #111111;
+    --danger: #c92a2a;
   }
 
   * { box-sizing: border-box; }
@@ -269,6 +271,42 @@
   }
   .suggest-item:active { background: color-mix(in srgb, var(--fg) 12%, transparent); }
 
+  /* --- Інфо-панель сповіщень (напр. підсумок перейменування, §6.6) --- */
+  #infoPanel {
+    display: none;
+    position: fixed;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    align-items: center;
+    gap: 8px;
+    background: var(--bg);
+    border-top: 1px solid color-mix(in srgb, var(--fg) 30%, transparent);
+    z-index: 15;
+    padding: 10px 14px;
+    font-size: 14px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  #infoPanel.open { display: flex; }
+  #infoPanel .info-icon {
+    flex: none;
+    width: 18px;
+    height: 18px;
+    border-radius: 50%;
+    border: 1.5px solid currentColor;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 11px;
+    font-weight: 700;
+    line-height: 1;
+  }
+  #infoPanel .info-text { overflow: hidden; text-overflow: ellipsis; }
+  /* danger стосується лише кольору тексту й іконки — сам вигляд панелі (фон/бордер) не міняється */
+  #infoPanel.danger { color: var(--danger); }
+
   /* --- Кастомний confirm виходу (§6.7) --- */
   #exitOverlay {
     display: none;
@@ -331,6 +369,11 @@
 
   <div id="suggestPanel"></div>
 
+  <div id="infoPanel">
+    <span class="info-icon" id="infoPanelIcon">i</span>
+    <span class="info-text" id="infoPanelText"></span>
+  </div>
+
   <div id="exitOverlay">
     <div id="exitDialog">
       <p>Бажаєте зберегти зміни?</p>
@@ -367,9 +410,9 @@
   };
 
   let bHistoryGuardPushed = false;
-  let nPendingGotoTimer = null;
   let nInputDebounceTimer = null;
   let nResizeDebounceTimer = null;
+  let nInfoPanelTimer = null;
 
   // Одноступеневий "поворот назад" після переходу по gt/gs (не для переходів з меню):
   // { nCaretOffset, sTargetID } — де sTargetID = локація, на яку щойно перейшли.
@@ -399,6 +442,9 @@
   const elBtnTheme = document.getElementById('btnTheme');
   const elLocList = document.getElementById('locList');
   const elSuggestPanel = document.getElementById('suggestPanel');
+  const elInfoPanel = document.getElementById('infoPanel');
+  const elInfoPanelIcon = document.getElementById('infoPanelIcon');
+  const elInfoPanelText = document.getElementById('infoPanelText');
   const elFileInput = document.getElementById('fileInput');
   const elExitOverlay = document.getElementById('exitOverlay');
   const elBtnExitYes = document.getElementById('btnExitYes');
@@ -412,6 +458,12 @@
   const RE_LOCATION_DECOMPILED = /^Location:\s*"([^"]+)"/;
   const RE_GOTO_REF_LINE = /\b(?:gt|gs)\s+'([^']*)'/g;
   const RE_WORD_CHAR = /[\p{L}\p{N}_]/u;
+  // Лапка/апостроф (прямий, типографський '’', подвійний '"') всередині слова
+  // (напр. українське "об'єкт") — не словесний символ сам собою, але не рве
+  // слово, якщо стоїть МІЖ двома словесними символами. Лапки-роздільники
+  // gt'...'/gs'...'/Location:"..." завжди мають нею межу з пробілом чи краєм
+  // рядка з одного боку, тому під цю умову не підпадають.
+  const RE_WORD_CONNECTOR = /['"’]/;
 
   // Перше gt/gs-посилання на рядку — використовується для клікабельного
   // gutter-номера рядків з посиланням (не лише декларацій локацій).
@@ -556,10 +608,9 @@
   }
 
   function scrollToLine(nLine) {
-    const nOffsetTop = aLineOffsetTop[nLine - 1] || 0;
-    const nTarget = nOffsetTop - (elEditor.clientHeight / 2) + (LINE_HEIGHT_PX / 2);
+    const nOffsetTop = aLineOffsetTop[nLine] || 0;
     const nMax = elEditor.scrollHeight - elEditor.clientHeight;
-    elEditor.scrollTop = Math.max(0, Math.min(nTarget, Math.max(0, nMax)));
+    elEditor.scrollTop = Math.max(0, Math.min(nOffsetTop, Math.max(0, nMax)));
   }
 
   function goToLine(nLine) {
@@ -593,11 +644,22 @@
   // ---------------------------------------------------------------------
   // Межі слова / прямокутник діапазону символів (§6.6, §9)
   // ---------------------------------------------------------------------
+  function isWordCharAt(sText, nIndex) {
+    return nIndex >= 0 && nIndex < sText.length && RE_WORD_CHAR.test(sText[nIndex]);
+  }
+
+  // Лапка/апостроф на позиції nIndex вважається частиною слова лише тоді,
+  // коли з обох боків стоять словесні символи (див. коментар до RE_WORD_CONNECTOR).
+  function isWordConnectorAt(sText, nIndex) {
+    return nIndex >= 0 && nIndex < sText.length && RE_WORD_CONNECTOR.test(sText[nIndex]) &&
+      isWordCharAt(sText, nIndex - 1) && isWordCharAt(sText, nIndex + 1);
+  }
+
   function getWordRange_ByCaretPosition(sText, nCaretIndex) {
     let nStart = nCaretIndex;
     let nEnd = nCaretIndex;
-    while (nStart > 0 && RE_WORD_CHAR.test(sText[nStart - 1])) nStart--;
-    while (nEnd < sText.length && RE_WORD_CHAR.test(sText[nEnd])) nEnd++;
+    while (nStart > 0 && (isWordCharAt(sText, nStart - 1) || isWordConnectorAt(sText, nStart - 1))) nStart--;
+    while (nEnd < sText.length && (isWordCharAt(sText, nEnd) || isWordConnectorAt(sText, nEnd))) nEnd++;
     return { nStart, nEnd, sWord: sText.slice(nStart, nEnd) };
   }
 
@@ -621,7 +683,7 @@
     const nWordTopWithinLine = spanWord.offsetTop;
     const nWordLeft = spanWord.offsetLeft;
     const nWordWidth = spanWord.offsetWidth || 6;
-    const nLineTop = aLineOffsetTop[nLineIdx - 1] || 0;
+    const nLineTop = aLineOffsetTop[nLineIdx] || 0;
 
     return {
       nLeft: nWordLeft,
@@ -645,12 +707,13 @@
   // §6.6 Перейменування по всьому файлу
   // ---------------------------------------------------------------------
   function setIdentifier_RenamedEverywhere(sText, sOriginalWord, sNewWord, oSkipRange) {
-    if (!sOriginalWord) return { sText, nCaretOffset: oSkipRange ? oSkipRange.nStart + sNewWord.length : 0 };
+    if (!sOriginalWord) return { sText, nCaretOffset: oSkipRange ? oSkipRange.nStart + sNewWord.length : 0, nReplacedCount: 0 };
     const sEscaped = sOriginalWord.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     const re = new RegExp(sEscaped, 'gu');
     let sResult = '';
     let nLast = 0;
     let nDeltaBeforeSkip = 0;
+    let nReplacedCount = 0;
     let m;
     while ((m = re.exec(sText))) {
       const nStart = m.index;
@@ -663,13 +726,14 @@
       if (!bBoundaryBefore || !bBoundaryAfter) continue;
       sResult += sText.slice(nLast, nStart) + sNewWord;
       nLast = nEnd;
+      nReplacedCount++;
       if (oSkipRange && nStart < oSkipRange.nStart) {
         nDeltaBeforeSkip += sNewWord.length - sOriginalWord.length;
       }
     }
     sResult += sText.slice(nLast);
     const nCaretOffset = oSkipRange ? oSkipRange.nStart + nDeltaBeforeSkip + sNewWord.length : sResult.length;
-    return { sText: sResult, nCaretOffset };
+    return { sText: sResult, nCaretOffset, nReplacedCount };
   }
 
   function positionRenameBox(nStart, nEnd) {
@@ -689,6 +753,7 @@
     const nCaret = elEditor.selectionStart;
     const oRange = getWordRange_ByCaretPosition(oEditorState.sText, nCaret);
     if (!oRange.sWord) return;
+    hideInfoPanel();
     oEditorState.bRenameModeActive = true;
     oEditorState.sOriginalWord = oRange.sWord;
     oEditorState.oWordRange = { nStart: oRange.nStart, nEnd: oRange.nEnd };
@@ -726,6 +791,9 @@
     elEditor.setSelectionRange(oResult.nCaretOffset, oResult.nCaretOffset);
     markUnsaved();
     rebuildLocationsAndGutterNow();
+    if (oResult.nReplacedCount > 0) {
+      showInfoPanel('Замінено в ' + oResult.nReplacedCount + ' місцях');
+    }
   }
 
   function cancelRenameMode() {
@@ -744,32 +812,10 @@
   }
 
   // ---------------------------------------------------------------------
-  // §6.1/AC-5 Одиночний тап → goto, подвійний тап → rename
+  // §6.1/AC-5 Подвійний тап → rename. Goto виконується лише кліком по
+  // gutter-row (ref-line/back-line, див. elGutter click нижче) — клік по
+  // тексту в самому редакторі більше не скролить до локації.
   // ---------------------------------------------------------------------
-  function findGotoRefAtCaret(nCaret) {
-    const nLine = findLineByIndex(nCaret);
-    const nLineStart = aLineStart[nLine - 1];
-    const sLine = getLineText(nLine);
-    RE_GOTO_REF_LINE.lastIndex = 0;
-    let m;
-    while ((m = RE_GOTO_REF_LINE.exec(sLine))) {
-      const nQuoteOpen = sLine.indexOf("'", m.index);
-      const nRefStart = nLineStart + nQuoteOpen + 1;
-      const nRefEnd = nRefStart + m[1].length;
-      if (nCaret >= nRefStart && nCaret <= nRefEnd) {
-        return { sID: m[1] };
-      }
-    }
-    return null;
-  }
-
-  function performGotoIfApplicable(nCaret) {
-    if (oEditorState.bRenameModeActive) return;
-    const oRef = findGotoRefAtCaret(nCaret);
-    if (!oRef) return;
-    goToLocation_ByID(oRef.sID, { nCaretOffset: nCaret });
-  }
-
   function onEditorClick() {
     if (oEditorState.bRenameModeActive) {
       const nCaret = elEditor.selectionStart;
@@ -778,19 +824,9 @@
       commitRenameMode();
       return;
     }
-    if (nPendingGotoTimer) clearTimeout(nPendingGotoTimer);
-    const nCaret = elEditor.selectionStart;
-    nPendingGotoTimer = setTimeout(() => {
-      nPendingGotoTimer = null;
-      performGotoIfApplicable(nCaret);
-    }, 300);
   }
 
   function onEditorDblClick() {
-    if (nPendingGotoTimer) {
-      clearTimeout(nPendingGotoTimer);
-      nPendingGotoTimer = null;
-    }
     startRenameMode();
   }
 
@@ -852,6 +888,7 @@
   }
 
   function renderSuggestPanel(aSuggestion, oContext) {
+    hideInfoPanel();
     elSuggestPanel.innerHTML = '';
     for (const oLoc of aSuggestion) {
       const btn = document.createElement('button');
@@ -869,15 +906,48 @@
     elSuggestPanel.innerHTML = '';
   }
 
-  function positionSuggestPanel() {
+  // Не даємо textarea втратити фокус (blur) при тапі по пункту підказки —
+  // інакше blur-обробник ховає/чистить панель раніше, ніж встигне спрацювати click.
+  elSuggestPanel.addEventListener('mousedown', (e) => {
+    e.preventDefault();
+  });
+
+  // Спільне позиціонування фіксованих нижніх панелей (suggestPanel/infoPanel)
+  // над віртуальною клавіатурою, якщо доступний visualViewport.
+  function positionBottomInset(el) {
     if (!window.visualViewport) return;
     const vv = window.visualViewport;
     const nBottomInset = Math.max(0, window.innerHeight - vv.height - vv.offsetTop);
-    elSuggestPanel.style.bottom = nBottomInset + 'px';
+    el.style.bottom = nBottomInset + 'px';
   }
+  function positionSuggestPanel() { positionBottomInset(elSuggestPanel); }
+  function positionInfoPanel() { positionBottomInset(elInfoPanel); }
   if (window.visualViewport) {
-    window.visualViewport.addEventListener('resize', positionSuggestPanel);
-    window.visualViewport.addEventListener('scroll', positionSuggestPanel);
+    window.visualViewport.addEventListener('resize', () => { positionSuggestPanel(); positionInfoPanel(); });
+    window.visualViewport.addEventListener('scroll', () => { positionSuggestPanel(); positionInfoPanel(); });
+  }
+
+  // ---------------------------------------------------------------------
+  // Інфо-панель сповіщень (напр. підсумок перейменування, §6.6; помилки — нижче)
+  // ---------------------------------------------------------------------
+  // sType: 'info' (типово) або 'danger' — для глобальних помилок (інша іконка/колір).
+  function showInfoPanel(sText, sType) {
+    const bDanger = sType === 'danger';
+    elInfoPanelIcon.textContent = bDanger ? '!' : 'i';
+    elInfoPanelText.textContent = sText;
+    elInfoPanel.classList.toggle('danger', bDanger);
+    elInfoPanel.classList.add('open');
+    positionInfoPanel();
+    if (nInfoPanelTimer) clearTimeout(nInfoPanelTimer);
+    nInfoPanelTimer = setTimeout(hideInfoPanel, bDanger ? 5000 : 2500);
+  }
+
+  function hideInfoPanel() {
+    elInfoPanel.classList.remove('open');
+    if (nInfoPanelTimer) {
+      clearTimeout(nInfoPanelTimer);
+      nInfoPanelTimer = null;
+    }
   }
 
   // ---------------------------------------------------------------------
@@ -1255,6 +1325,31 @@
   }, true);
 
   window.addEventListener('resize', scheduleGutterRelayout);
+
+  // ---------------------------------------------------------------------
+  // Глобальний обробник помилок — виводить текст у ту саму інфо-панель,
+  // що й підсумок перейменування, але в danger-вигляді (іконка "❗", колір --danger).
+  // ---------------------------------------------------------------------
+  function getErrorMessage(e) {
+    if (e instanceof Error) return e.message || String(e);
+    if (e && typeof e === 'object') {
+      if ('message' in e) return String(e.message);
+      try { return JSON.stringify(e); } catch (_e) { return String(e); }
+    }
+    return String(e);
+  }
+
+  window.addEventListener('error', (e) => {
+    const sMsg = e.error ? getErrorMessage(e.error) : (e.message || 'Невідома помилка');
+    console.error('qlTag: неперехоплена помилка —', e.error || e.message);
+    showInfoPanel(sMsg, 'danger');
+  });
+
+  window.addEventListener('unhandledrejection', (e) => {
+    const sMsg = getErrorMessage(e.reason);
+    console.error('qlTag: неперехоплена відмова проміса —', e.reason);
+    showInfoPanel(sMsg, 'danger');
+  });
 
   // ---------------------------------------------------------------------
   // Service worker (§7 PWA)
