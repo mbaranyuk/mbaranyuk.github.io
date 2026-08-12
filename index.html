@@ -109,17 +109,24 @@
     display: flex;
   }
 
-  /* --- Область редактора: gutter + textarea --- */
+  /* --- Область редактора: gutter + textarea ---
+     Єдиний нативний scroll-контейнер для gutter і textarea (§6.1/§6.6):
+     textarea без власного скролу, на всю висоту контенту, gutter/рамка —
+     звичайний контент у #editorArea, рухаються разом з нею без JS-синку.
+     ПЕРЕВІРЯЄТЬСЯ повторно на регрес "фокус тягне скрол" — див. коментар
+     біля #editor нижче й тест на реальному touch-drag перед фіналізацією. */
   #editorArea {
     flex: 1 1 auto;
     display: flex;
+    align-items: flex-start;
     min-height: 0;
     position: relative;
+    overflow-y: auto;
+    scroll-behavior: smooth;
   }
   #gutter {
     flex: 0 0 var(--gutter-width);
     width: var(--gutter-width);
-    overflow: hidden;
     background: var(--bg);
     border-right: 1px solid color-mix(in srgb, var(--fg) 15%, transparent);
     color: color-mix(in srgb, var(--fg) 45%, transparent);
@@ -150,10 +157,10 @@
     min-width: 0;
   }
   #editor {
-    position: absolute;
-    inset: 0;
+    display: block;
     width: 100%;
-    height: 100%;
+    /* висота виставляється в JS = точній висоті контенту (rebuildGutterLayout),
+       щоб textarea не мала власного скролу — скролиться лише #editorArea. */
     resize: none;
     border: 0;
     outline: none;
@@ -165,9 +172,7 @@
     line-height: var(--line-height);
     white-space: pre-wrap;
     word-break: break-word;
-    overflow-y: auto;
-    overflow-x: hidden;
-    scroll-behavior: smooth;
+    overflow: hidden;
   }
   #editor::selection { background: color-mix(in srgb, var(--fg) 35%, transparent); }
 
@@ -456,6 +461,7 @@
   // DOM-посилання
   // ---------------------------------------------------------------------
   const elEditor = document.getElementById('editor');
+  const elEditorArea = document.getElementById('editorArea');
   const elGutter = document.getElementById('gutter');
   const elMirror = document.getElementById('mirror');
   const elRenameBox = document.getElementById('renameBox');
@@ -609,11 +615,10 @@
       nTop += nRows * LINE_HEIGHT_PX;
     }
     elGutter.innerHTML = sHtml;
-    syncGutterScroll();
-  }
-
-  function syncGutterScroll() {
-    elGutter.scrollTop = elEditor.scrollTop;
+    // textarea без власного скролу (скролиться лише #editorArea, див. CSS
+    // §6.1) — висота виставляється точно nTop, тим самим числом, яким
+    // побудовано gutter, тож рядки гарантовано не розходяться.
+    elEditor.style.height = nTop + 'px';
   }
 
   // Оновлює позначку "<" (поворот назад) на існуючому gutter без повного rebuild'у.
@@ -634,8 +639,8 @@
 
   function scrollToLine(nLine) {
     const nOffsetTop = aLineOffsetTop[nLine] || 0;
-    const nMax = elEditor.scrollHeight - elEditor.clientHeight;
-    elEditor.scrollTop = Math.max(0, Math.min(nOffsetTop, Math.max(0, nMax)));
+    const nMax = elEditorArea.scrollHeight - elEditorArea.clientHeight;
+    elEditorArea.scrollTop = Math.max(0, Math.min(nOffsetTop, Math.max(0, nMax)));
   }
 
   function goToLine(nLine) {
@@ -761,34 +766,21 @@
     return { sText: sResult, nCaretOffset, nReplacedCount };
   }
 
-  // Геометрія рамки перейменування, закешована між викликами: nLeft/nWidth/
-  // nHeight й "сирий" nTop (без урахування scrollTop) залежать лише від
-  // тексту й позиції слова в ньому, а не від скролу. На scroll-евенті
-  // перераховувати їх через getTextRangeRect_ByOffset (мірний div + reflow)
-  // дорого й не встигає за швидким скролом — звідси "лаг" рамки. Замість
-  // цього scroll лише дешево підставляє новий scrollTop у вже готову
-  // геометрію (repositionRenameBoxForScroll нижче).
-  let oRenameBoxGeom = null;
-
+  // #renameBox — position:absolute усередині #textareaWrap, а #textareaWrap
+  // сам є звичайним (не скрольованим) контентом у #editorArea (§6.1). Тому
+  // рамка рухається разом з текстом при скролі природно, без жодного JS-
+  // синку: досить виставити координати відносно #textareaWrap один раз.
   function positionRenameBox(nStart, nEnd) {
-    oRenameBoxGeom = getTextRangeRect_ByOffset(nStart, nEnd);
+    const r = getTextRangeRect_ByOffset(nStart, nEnd);
     elRenameBox.style.display = 'block';
-    elRenameBox.style.left = oRenameBoxGeom.nLeft + 'px';
-    elRenameBox.style.top = (oRenameBoxGeom.nTop - elEditor.scrollTop) + 'px';
-    elRenameBox.style.width = oRenameBoxGeom.nWidth + 'px';
-    elRenameBox.style.height = oRenameBoxGeom.nHeight + 'px';
-  }
-
-  // Дешевий "хвіст" positionRenameBox для scroll: без реквеста до mirror,
-  // лише зсуває вже закешовану геометрію на поточний scrollTop.
-  function repositionRenameBoxForScroll() {
-    if (!oRenameBoxGeom) return;
-    elRenameBox.style.top = (oRenameBoxGeom.nTop - elEditor.scrollTop) + 'px';
+    elRenameBox.style.left = r.nLeft + 'px';
+    elRenameBox.style.top = r.nTop + 'px';
+    elRenameBox.style.width = r.nWidth + 'px';
+    elRenameBox.style.height = r.nHeight + 'px';
   }
 
   function hideRenameBox() {
     elRenameBox.style.display = 'none';
-    oRenameBoxGeom = null;
   }
 
   function startRenameMode() {
@@ -1088,7 +1080,7 @@
     oUndoDiff = null;
     markSaved();
     rebuildLocationsAndGutterNow();
-    elEditor.scrollTop = 0;
+    elEditorArea.scrollTop = 0;
   }
 
   async function openFile() {
@@ -1372,22 +1364,9 @@
     schedulePersistLastFile();
   });
 
-  elEditor.addEventListener('scroll', syncGutterScroll);
-
-  // рамка перейменування — sibling-елемент textarea, тому не скролиться
-  // разом з текстом; синхронізуємо на кожному скролі (§6.6). rAF коалесує
-  // серію scroll-евентів (тач-скрол шле їх пачками) в один дешевий апдейт
-  // на кадр — без цього швидкий скрол "лагав", бо repositionRenameBox
-  // раніше на кожен тік ганяв важкий mirror-reflow.
-  let bRenameBoxScrollScheduled = false;
-  elEditor.addEventListener('scroll', () => {
-    if (!oEditorState.bRenameModeActive || bRenameBoxScrollScheduled) return;
-    bRenameBoxScrollScheduled = true;
-    requestAnimationFrame(() => {
-      bRenameBoxScrollScheduled = false;
-      repositionRenameBoxForScroll();
-    });
-  });
+  // Ні gutter, ні рамка перейменування більше не потребують JS-синку зі
+  // скролом textarea — скролиться єдиний #editorArea, а вони обидва звичайний
+  // контент у ньому (§6.1/§6.6, див. CSS-коментар над #editorArea).
 
   elEditor.addEventListener('click', onEditorClick);
   elEditor.addEventListener('dblclick', onEditorDblClick);
