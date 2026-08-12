@@ -1,0 +1,1277 @@
+<!DOCTYPE html>
+<html lang="uk">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="theme-color" content="#111111">
+<title>qlTag</title>
+<link rel="manifest" href="manifest.json">
+<link rel="icon" href="icons/icon-192.png">
+<link rel="apple-touch-icon" href="icons/icon-192.png">
+<script>
+// Застосувати тему до першого рендеру, щоб уникнути flash-of-wrong-theme (§6.3).
+(function () {
+  try {
+    var t = localStorage.getItem('qlTag.theme');
+    if (t === 'light' || t === 'dark') document.documentElement.setAttribute('data-theme', t);
+  } catch (e) {}
+})();
+</script>
+<style>
+  :root {
+    --bg: #111111;
+    --fg: #eeeeee;
+    --line-height: 22px;
+    --font-size: 15px;
+    --gutter-width: 44px;
+    --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, "Courier New", monospace;
+  }
+  :root[data-theme="light"] {
+    --bg: #f4f4f0;
+    --fg: #111111;
+  }
+
+  * { box-sizing: border-box; }
+  html, body {
+    height: 100%;
+    margin: 0;
+    overflow: hidden;
+    background: var(--bg);
+    color: var(--fg);
+  }
+  body {
+    font-family: var(--font-mono);
+    font-size: var(--font-size);
+    -webkit-tap-highlight-color: transparent;
+  }
+  button {
+    font-family: inherit;
+    font-size: inherit;
+    color: inherit;
+    background: transparent;
+    border: 0;
+    padding: 0;
+    cursor: pointer;
+  }
+
+  #appRoot {
+    height: 100%;
+    height: 100dvh;
+    display: flex;
+    flex-direction: column;
+  }
+
+  /* --- Рядок 0: іконка меню, sticky зверху (§6.1) --- */
+  #topBar {
+    flex: 0 0 auto;
+    display: flex;
+    align-items: stretch;
+    background: var(--bg);
+    border-bottom: 1px solid color-mix(in srgb, var(--fg) 15%, transparent);
+  }
+  #btnMenu {
+    flex: 0 0 var(--gutter-width);
+    width: var(--gutter-width);
+    min-width: 0;
+    min-height: 32px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 18px;
+    line-height: 1;
+    border-right: 1px solid color-mix(in srgb, var(--fg) 15%, transparent);
+  }
+  #topBarLabel {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    padding: 0 10px;
+    color: color-mix(in srgb, var(--fg) 55%, transparent);
+    font-size: 13px;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+  }
+
+  /* --- Область редактора: gutter + textarea --- */
+  #editorArea {
+    flex: 1 1 auto;
+    display: flex;
+    min-height: 0;
+    position: relative;
+  }
+  #gutter {
+    flex: 0 0 var(--gutter-width);
+    width: var(--gutter-width);
+    overflow: hidden;
+    background: var(--bg);
+    border-right: 1px solid color-mix(in srgb, var(--fg) 15%, transparent);
+    color: color-mix(in srgb, var(--fg) 45%, transparent);
+    font-size: var(--font-size);
+    line-height: var(--line-height);
+  }
+  .gutter-row {
+    height: var(--line-height);
+    line-height: var(--line-height);
+    padding-right: 8px;
+    text-align: right;
+    white-space: nowrap;
+  }
+  .gutter-row.ref-line {
+    cursor: pointer;
+    border-bottom: 1px dashed color-mix(in srgb, var(--fg) 60%, transparent);
+  }
+  .gutter-row.back-line {
+    cursor: pointer;
+  }
+  .gutter-row.flash {
+    background: color-mix(in srgb, var(--fg) 25%, transparent);
+  }
+
+  #textareaWrap {
+    flex: 1 1 auto;
+    position: relative;
+    min-width: 0;
+  }
+  #editor {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    resize: none;
+    border: 0;
+    outline: none;
+    padding: 0 10px;
+    background: var(--bg);
+    color: var(--fg);
+    font-family: var(--font-mono);
+    font-size: var(--font-size);
+    line-height: var(--line-height);
+    white-space: pre-wrap;
+    word-break: break-word;
+    overflow-y: auto;
+    overflow-x: hidden;
+    scroll-behavior: smooth;
+  }
+  #editor::selection { background: color-mix(in srgb, var(--fg) 35%, transparent); }
+
+  /* мірна копія тексту, невидима, для розрахунку wrap (§6.1/§9) */
+  #mirror {
+    position: absolute;
+    visibility: hidden;
+    top: -99999px;
+    left: -99999px;
+    padding: 0 10px;
+    font-family: var(--font-mono);
+    font-size: var(--font-size);
+    line-height: var(--line-height);
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+  #mirror div { white-space: pre-wrap; word-break: break-word; }
+
+  /* рамка перейменування (§6.6) */
+  #renameBox {
+    position: absolute;
+    display: none;
+    pointer-events: none;
+    border: 1px solid var(--fg);
+    background: color-mix(in srgb, var(--fg) 12%, transparent);
+    border-radius: 2px;
+  }
+
+  /* --- Меню (§6.2), без анімації --- */
+  #menuOverlay {
+    display: none;
+    position: fixed;
+    inset: 0;
+    background: color-mix(in srgb, black 40%, transparent);
+    z-index: 20;
+  }
+  #menuOverlay.open { display: block; }
+  #menuPanel {
+    position: absolute;
+    top: 0;
+    left: 0;
+    bottom: 0;
+    width: min(320px, 86vw);
+    background: var(--bg);
+    color: var(--fg);
+    border-right: 1px solid color-mix(in srgb, var(--fg) 25%, transparent);
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+  .menu-btn {
+    text-align: left;
+    padding: 14px 16px;
+    font-size: 15px;
+    border-bottom: 1px solid color-mix(in srgb, var(--fg) 12%, transparent);
+  }
+  .menu-btn:active { background: color-mix(in srgb, var(--fg) 12%, transparent); }
+  #menuHr {
+    border: 0;
+    border-top: 1px solid color-mix(in srgb, var(--fg) 25%, transparent);
+    margin: 8px 0 0 0;
+  }
+  #locListLabel {
+    padding: 10px 16px 4px;
+    font-size: 12px;
+    color: color-mix(in srgb, var(--fg) 55%, transparent);
+    letter-spacing: 0.04em;
+  }
+  #locList {
+    flex: 1 1 auto;
+    overflow-y: auto;
+    padding-bottom: 8px;
+  }
+  .loc-item {
+    display: block;
+    width: 100%;
+    text-align: left;
+    padding: 9px 16px;
+    font-size: 14px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .loc-item:active { background: color-mix(in srgb, var(--fg) 12%, transparent); }
+  #locEmpty {
+    padding: 9px 16px;
+    font-size: 13px;
+    color: color-mix(in srgb, var(--fg) 45%, transparent);
+  }
+
+  /* --- Панель автозаповнення gt'...'/gs'...' (§6.5) --- */
+  #suggestPanel {
+    display: none;
+    position: fixed;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: var(--bg);
+    border-top: 1px solid color-mix(in srgb, var(--fg) 30%, transparent);
+    z-index: 15;
+    max-height: 45vh;
+    overflow-y: auto;
+  }
+  #suggestPanel.open { display: block; }
+  .suggest-item {
+    display: block;
+    width: 100%;
+    text-align: left;
+    padding: 10px 14px;
+    font-size: 14px;
+    border-bottom: 1px solid color-mix(in srgb, var(--fg) 10%, transparent);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .suggest-item:active { background: color-mix(in srgb, var(--fg) 12%, transparent); }
+
+  /* --- Кастомний confirm виходу (§6.7) --- */
+  #exitOverlay {
+    display: none;
+    position: fixed;
+    inset: 0;
+    background: color-mix(in srgb, black 45%, transparent);
+    align-items: center;
+    justify-content: center;
+    z-index: 30;
+  }
+  #exitOverlay.open { display: flex; }
+  #exitDialog {
+    background: var(--bg);
+    color: var(--fg);
+    border: 1px solid color-mix(in srgb, var(--fg) 35%, transparent);
+    border-radius: 4px;
+    padding: 18px;
+    width: min(320px, 88vw);
+    text-align: center;
+  }
+  #exitDialog p { margin: 0 0 16px 0; font-size: 15px; }
+  #exitDialog .row { display: flex; gap: 10px; justify-content: center; }
+  #exitDialog button {
+    flex: 1;
+    padding: 10px 0;
+    border: 1px solid var(--fg);
+    border-radius: 3px;
+  }
+  #exitDialog button:active { background: color-mix(in srgb, var(--fg) 15%, transparent); }
+</style>
+</head>
+<body>
+<div id="appRoot">
+
+  <div id="topBar">
+    <button id="btnMenu" aria-label="Меню">☰</button>
+    <div id="topBarLabel"></div>
+  </div>
+
+  <div id="editorArea">
+    <div id="gutter"></div>
+    <div id="textareaWrap">
+      <textarea id="editor" spellcheck="false" autocapitalize="off" autocorrect="off"></textarea>
+      <div id="mirror" aria-hidden="true"></div>
+      <div id="renameBox"></div>
+    </div>
+  </div>
+
+  <div id="menuOverlay">
+    <div id="menuPanel">
+      <button class="menu-btn" id="btnOpen">Відкрити</button>
+      <button class="menu-btn" id="btnSave">Зберегти</button>
+      <button class="menu-btn" id="btnNew">Новий файл</button>
+      <button class="menu-btn" id="btnTheme">☾ Тема</button>
+      <!-- <hr id="menuHr"> -->
+      <div id="locListLabel">Локації:</div>
+      <div id="locList"></div>
+    </div>
+  </div>
+
+  <div id="suggestPanel"></div>
+
+  <div id="exitOverlay">
+    <div id="exitDialog">
+      <p>Бажаєте зберегти зміни?</p>
+      <div class="row">
+        <button id="btnExitYes">Так</button>
+        <button id="btnExitNo">Ні</button>
+      </div>
+    </div>
+  </div>
+
+  <input type="file" id="fileInput" accept=".qsp,.txt" style="display:none">
+</div>
+
+<script>
+(function () {
+  'use strict';
+
+  // ---------------------------------------------------------------------
+  // Стан застосунку (§9 SPEC.md)
+  // ---------------------------------------------------------------------
+  const oEditorState = {
+    sText: '',
+    aLocation: [],           // [{ sID, nLine }], у порядку появи, без дублікатів
+    oFileHandle: null,       // File System Access API handle або null
+    sFileName: 'quest.qsp',  // ім'я файлу для fallback-download / підпису топбару
+    bMenuOpen: false,
+    sTheme: 'dark',
+    oGotoContext: null,      // { sPrefix, nRangeStart, nRangeEnd } або null
+    aSuggestion: [],
+    bRenameModeActive: false,
+    sOriginalWord: '',
+    oWordRange: null,        // { nStart, nEnd }
+    bUnsavedChange: false,
+  };
+
+  let bHistoryGuardPushed = false;
+  let nPendingGotoTimer = null;
+  let nInputDebounceTimer = null;
+  let nResizeDebounceTimer = null;
+
+  // Одноступеневий "поворот назад" після переходу по gt/gs (не для переходів з меню):
+  // { nCaretOffset, sTargetID } — де sTargetID = локація, на яку щойно перейшли.
+  let oNavBack = null;
+
+  // Кеш geometрії gutter'а: aLineStart[nLine] (1-based) = offset у sText,
+  // aLineOffsetTop[nLine] = піксельний top блоку рядка, aVisualRowCount[nLine].
+  let aLineStart = [0];
+  let aLineOffsetTop = [0];
+  let aVisualRowCount = [];
+  const LINE_HEIGHT_PX = 22;
+
+  // ---------------------------------------------------------------------
+  // DOM-посилання
+  // ---------------------------------------------------------------------
+  const elEditor = document.getElementById('editor');
+  const elGutter = document.getElementById('gutter');
+  const elMirror = document.getElementById('mirror');
+  const elRenameBox = document.getElementById('renameBox');
+  const elTextareaWrap = document.getElementById('textareaWrap');
+  const elBtnMenu = document.getElementById('btnMenu');
+  const elMenuOverlay = document.getElementById('menuOverlay');
+  const elMenuPanel = document.getElementById('menuPanel');
+  const elBtnOpen = document.getElementById('btnOpen');
+  const elBtnSave = document.getElementById('btnSave');
+  const elBtnNew = document.getElementById('btnNew');
+  const elBtnTheme = document.getElementById('btnTheme');
+  const elLocList = document.getElementById('locList');
+  const elSuggestPanel = document.getElementById('suggestPanel');
+  const elFileInput = document.getElementById('fileInput');
+  const elExitOverlay = document.getElementById('exitOverlay');
+  const elBtnExitYes = document.getElementById('btnExitYes');
+  const elBtnExitNo = document.getElementById('btnExitNo');
+  const elTopBarLabel = document.getElementById('topBarLabel');
+
+  // ---------------------------------------------------------------------
+  // §5 Виявлення локацій
+  // ---------------------------------------------------------------------
+  const RE_LOCATION_CLASSIC = /^#\s*(\S+)/;
+  const RE_LOCATION_DECOMPILED = /^Location:\s*"([^"]+)"/;
+  const RE_GOTO_REF_LINE = /\b(?:gt|gs)\s+'([^']*)'/g;
+  const RE_WORD_CHAR = /[\p{L}\p{N}_]/u;
+
+  // Перше gt/gs-посилання на рядку — використовується для клікабельного
+  // gutter-номера рядків з посиланням (не лише декларацій локацій).
+  // nIndexInLine — позиція першого символу ID в рядку (для повороту назад).
+  function getFirstGotoRef_ByLineText(sLine) {
+    RE_GOTO_REF_LINE.lastIndex = 0;
+    const m = RE_GOTO_REF_LINE.exec(sLine);
+    if (!m) return null;
+    const nQuoteOpen = sLine.indexOf("'", m.index);
+    return { sID: m[1], nIndexInLine: nQuoteOpen + 1 };
+  }
+
+  function escapeHtmlAttr(s) {
+    return s.replace(/&/g, '&amp;').replace(/"/g, '&quot;');
+  }
+
+  function getLocationList_ParsedByText(sText) {
+    const aLines = sText.split('\n');
+    const aResult = [];
+    const oSeen = Object.create(null);
+    for (let i = 0; i < aLines.length; i++) {
+      const sLine = aLines[i];
+      const m = RE_LOCATION_CLASSIC.exec(sLine) || RE_LOCATION_DECOMPILED.exec(sLine);
+      if (m && m[1] && !oSeen[m[1]]) {
+        oSeen[m[1]] = true;
+        aResult.push({ sID: m[1], nLine: i + 1 });
+      }
+    }
+    return aResult;
+  }
+
+  // oOrigin: { nCaretOffset } — звідки саме перейшли по gt/gs (для повороту назад, §6.1).
+  // Не передається для переходів з меню — там позначку "<" не показуємо.
+  function goToLocation_ByID(sID, oOrigin) {
+    const oLoc = oEditorState.aLocation.find((o) => o.sID === sID);
+    if (!oLoc) {
+      console.warn('qlTag: локацію не знайдено — ' + sID);
+      return;
+    }
+    if (oOrigin) {
+      oNavBack = { nCaretOffset: oOrigin.nCaretOffset, sTargetID: sID };
+      applyNavBackMarker();
+    }
+    goToLine(oLoc.nLine);
+  }
+
+  // ---------------------------------------------------------------------
+  // Gutter: побудова номерів рядків + wrap-aware висота (§6.1, §9)
+  // ---------------------------------------------------------------------
+  function rebuildLineStartIndex() {
+    aLineStart = [0];
+    let n = 0;
+    const sText = oEditorState.sText;
+    for (let i = 0; i < sText.length; i++) {
+      if (sText[i] === '\n') aLineStart.push(i + 1);
+    }
+  }
+
+  function getLineCount() {
+    return aLineStart.length;
+  }
+
+  function getLineText(nLine) {
+    // nLine — 1-based
+    const nStart = aLineStart[nLine - 1];
+    const nEnd = nLine < aLineStart.length ? aLineStart[nLine] - 1 : oEditorState.sText.length;
+    return oEditorState.sText.slice(nStart, nEnd);
+  }
+
+  function rebuildGutterLayout() {
+    rebuildLineStartIndex();
+    const nLineCount = getLineCount();
+    const aLines = [];
+    for (let i = 1; i <= nLineCount; i++) aLines.push(getLineText(i));
+
+    // Виміряти visual-row-count кожного логічного рядка через mirror-div (§6.1/§9).
+    elMirror.style.width = elEditor.clientWidth + 'px';
+    const frag = document.createDocumentFragment();
+    for (const sLine of aLines) {
+      const d = document.createElement('div');
+      d.textContent = sLine.length ? sLine : '​';
+      frag.appendChild(d);
+    }
+    elMirror.replaceChildren(frag);
+    aVisualRowCount = [];
+    const aChildren = elMirror.children;
+    for (let i = 0; i < aChildren.length; i++) {
+      const nRows = Math.max(1, Math.round(aChildren[i].offsetHeight / LINE_HEIGHT_PX));
+      aVisualRowCount.push(nRows);
+    }
+
+    // gutter HTML + offset-top кожного логічного рядка
+    const oLocByLine = Object.create(null);
+    for (const oLoc of oEditorState.aLocation) oLocByLine[oLoc.nLine] = oLoc.sID;
+
+    aLineOffsetTop = [0];
+    let sHtml = '';
+    let nTop = 0;
+    for (let i = 0; i < nLineCount; i++) {
+      const nLine = i + 1;
+      aLineOffsetTop.push(nTop);
+      const bIsLoc = !!oLocByLine[nLine];
+      const oRef = bIsLoc ? null : getFirstGotoRef_ByLineText(aLines[i]);
+      const nRows = aVisualRowCount[i] || 1;
+      const bIsBackTarget = bIsLoc && !!oNavBack && oLocByLine[nLine] === oNavBack.sTargetID;
+      let sClass = 'gutter-row';
+      let sData = '';
+      let sContent = String(nLine);
+      if (bIsBackTarget) {
+        sClass += ' back-line';
+        sContent = '&lt;' + nLine;
+      } else if (oRef) {
+        sClass += ' ref-line';
+        sData = ' data-ref="' + escapeHtmlAttr(oRef.sID) + '" data-caret="' + (aLineStart[i] + oRef.nIndexInLine) + '"';
+      }
+      sHtml += '<div class="' + sClass + '" data-line="' + nLine + '"' + sData + '>' + sContent + '</div>';
+      for (let r = 1; r < nRows; r++) sHtml += '<div class="gutter-row"></div>';
+      nTop += nRows * LINE_HEIGHT_PX;
+    }
+    elGutter.innerHTML = sHtml;
+    syncGutterScroll();
+  }
+
+  function syncGutterScroll() {
+    elGutter.scrollTop = elEditor.scrollTop;
+  }
+
+  // Оновлює позначку "<" (поворот назад) на існуючому gutter без повного rebuild'у.
+  function applyNavBackMarker() {
+    const elPrev = elGutter.querySelector('.gutter-row.back-line');
+    if (elPrev) {
+      elPrev.classList.remove('back-line');
+      elPrev.textContent = elPrev.dataset.line;
+    }
+    if (!oNavBack) return;
+    const oLoc = oEditorState.aLocation.find((o) => o.sID === oNavBack.sTargetID);
+    if (!oLoc) return;
+    const el = elGutter.querySelector('.gutter-row[data-line="' + oLoc.nLine + '"]');
+    if (!el) return;
+    el.classList.add('back-line');
+    el.textContent = '<' + oLoc.nLine;
+  }
+
+  function scrollToLine(nLine) {
+    const nOffsetTop = aLineOffsetTop[nLine - 1] || 0;
+    const nTarget = nOffsetTop - (elEditor.clientHeight / 2) + (LINE_HEIGHT_PX / 2);
+    const nMax = elEditor.scrollHeight - elEditor.clientHeight;
+    elEditor.scrollTop = Math.max(0, Math.min(nTarget, Math.max(0, nMax)));
+  }
+
+  function goToLine(nLine) {
+    scrollToLine(nLine);
+    const nCaret = aLineStart[nLine - 1];
+    elEditor.focus({ preventScroll: true });
+    elEditor.setSelectionRange(nCaret, nCaret);
+    flashGutterLine(nLine);
+  }
+
+  // Поворот назад: до caret-позиції, з якої востаннє перейшли по gt/gs (§6.1).
+  function goToNavBack() {
+    if (!oNavBack) return;
+    const nCaret = Math.min(oNavBack.nCaretOffset, oEditorState.sText.length);
+    oNavBack = null;
+    applyNavBackMarker();
+    const nLine = findLineByIndex(nCaret);
+    scrollToLine(nLine);
+    elEditor.focus({ preventScroll: true });
+    elEditor.setSelectionRange(nCaret, nCaret);
+    flashGutterLine(nLine);
+  }
+
+  function flashGutterLine(nLine) {
+    const el = elGutter.querySelector('.gutter-row[data-line="' + nLine + '"]');
+    if (!el) return;
+    el.classList.add('flash');
+    setTimeout(() => el.classList.remove('flash'), 650);
+  }
+
+  // ---------------------------------------------------------------------
+  // Межі слова / прямокутник діапазону символів (§6.6, §9)
+  // ---------------------------------------------------------------------
+  function getWordRange_ByCaretPosition(sText, nCaretIndex) {
+    let nStart = nCaretIndex;
+    let nEnd = nCaretIndex;
+    while (nStart > 0 && RE_WORD_CHAR.test(sText[nStart - 1])) nStart--;
+    while (nEnd < sText.length && RE_WORD_CHAR.test(sText[nEnd])) nEnd++;
+    return { nStart, nEnd, sWord: sText.slice(nStart, nEnd) };
+  }
+
+  function getTextRangeRect_ByOffset(nStart, nEnd) {
+    const sText = oEditorState.sText;
+    const nLineIdx = findLineByIndex(nStart);
+    const nLineStart = aLineStart[nLineIdx - 1];
+    const sBefore = sText.slice(nLineStart, nStart);
+    const sWord = sText.slice(nStart, nEnd);
+
+    elMirror.style.width = elEditor.clientWidth + 'px';
+    const d = document.createElement('div');
+    const spanBefore = document.createElement('span');
+    spanBefore.textContent = sBefore;
+    const spanWord = document.createElement('span');
+    spanWord.textContent = sWord.length ? sWord : '​';
+    d.appendChild(spanBefore);
+    d.appendChild(spanWord);
+    elMirror.replaceChildren(d);
+
+    const nWordTopWithinLine = spanWord.offsetTop;
+    const nWordLeft = spanWord.offsetLeft;
+    const nWordWidth = spanWord.offsetWidth || 6;
+    const nLineTop = aLineOffsetTop[nLineIdx - 1] || 0;
+
+    return {
+      nLeft: nWordLeft,
+      nTop: nLineTop + nWordTopWithinLine,
+      nWidth: nWordWidth,
+      nHeight: LINE_HEIGHT_PX,
+    };
+  }
+
+  function findLineByIndex(nIndex) {
+    // бінарний пошук останнього aLineStart[i] <= nIndex, повертає 1-based номер рядка
+    let lo = 0, hi = aLineStart.length - 1, ans = 0;
+    while (lo <= hi) {
+      const mid = (lo + hi) >> 1;
+      if (aLineStart[mid] <= nIndex) { ans = mid; lo = mid + 1; } else { hi = mid - 1; }
+    }
+    return ans + 1;
+  }
+
+  // ---------------------------------------------------------------------
+  // §6.6 Перейменування по всьому файлу
+  // ---------------------------------------------------------------------
+  function setIdentifier_RenamedEverywhere(sText, sOriginalWord, sNewWord, oSkipRange) {
+    if (!sOriginalWord) return { sText, nCaretOffset: oSkipRange ? oSkipRange.nStart + sNewWord.length : 0 };
+    const sEscaped = sOriginalWord.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const re = new RegExp(sEscaped, 'gu');
+    let sResult = '';
+    let nLast = 0;
+    let nDeltaBeforeSkip = 0;
+    let m;
+    while ((m = re.exec(sText))) {
+      const nStart = m.index;
+      const nEnd = nStart + sOriginalWord.length;
+      if (oSkipRange && nStart === oSkipRange.nStart) continue;
+      const cBefore = nStart > 0 ? sText[nStart - 1] : '';
+      const cAfter = nEnd < sText.length ? sText[nEnd] : '';
+      const bBoundaryBefore = !cBefore || !RE_WORD_CHAR.test(cBefore);
+      const bBoundaryAfter = !cAfter || !RE_WORD_CHAR.test(cAfter);
+      if (!bBoundaryBefore || !bBoundaryAfter) continue;
+      sResult += sText.slice(nLast, nStart) + sNewWord;
+      nLast = nEnd;
+      if (oSkipRange && nStart < oSkipRange.nStart) {
+        nDeltaBeforeSkip += sNewWord.length - sOriginalWord.length;
+      }
+    }
+    sResult += sText.slice(nLast);
+    const nCaretOffset = oSkipRange ? oSkipRange.nStart + nDeltaBeforeSkip + sNewWord.length : sResult.length;
+    return { sText: sResult, nCaretOffset };
+  }
+
+  function positionRenameBox(nStart, nEnd) {
+    const r = getTextRangeRect_ByOffset(nStart, nEnd);
+    elRenameBox.style.display = 'block';
+    elRenameBox.style.left = r.nLeft + 'px';
+    elRenameBox.style.top = (r.nTop - elEditor.scrollTop) + 'px';
+    elRenameBox.style.width = r.nWidth + 'px';
+    elRenameBox.style.height = r.nHeight + 'px';
+  }
+
+  function hideRenameBox() {
+    elRenameBox.style.display = 'none';
+  }
+
+  function startRenameMode() {
+    const nCaret = elEditor.selectionStart;
+    const oRange = getWordRange_ByCaretPosition(oEditorState.sText, nCaret);
+    if (!oRange.sWord) return;
+    oEditorState.bRenameModeActive = true;
+    oEditorState.sOriginalWord = oRange.sWord;
+    oEditorState.oWordRange = { nStart: oRange.nStart, nEnd: oRange.nEnd };
+    elEditor.setSelectionRange(oRange.nStart, oRange.nEnd);
+    hideSuggestPanel();
+    positionRenameBox(oRange.nStart, oRange.nEnd);
+  }
+
+  function updateRenameModeOnInput() {
+    if (!oEditorState.bRenameModeActive) return;
+    oEditorState.sText = elEditor.value;
+    const nCaret = elEditor.selectionStart;
+    const oRange = getWordRange_ByCaretPosition(oEditorState.sText, nCaret);
+    oEditorState.oWordRange = { nStart: oRange.nStart, nEnd: oRange.nEnd };
+    if (oRange.sWord) {
+      positionRenameBox(oRange.nStart, oRange.nEnd);
+    } else {
+      hideRenameBox();
+    }
+  }
+
+  function commitRenameMode() {
+    if (!oEditorState.bRenameModeActive) return;
+    const oRange = oEditorState.oWordRange;
+    oEditorState.bRenameModeActive = false;
+    hideRenameBox();
+    if (!oRange) return;
+    const sNewWord = oEditorState.sText.slice(oRange.nStart, oRange.nEnd);
+    const sOriginalWord = oEditorState.sOriginalWord;
+    if (!sNewWord || sNewWord === sOriginalWord) return;
+
+    const oResult = setIdentifier_RenamedEverywhere(oEditorState.sText, sOriginalWord, sNewWord, oRange);
+    oEditorState.sText = oResult.sText;
+    elEditor.value = oResult.sText;
+    elEditor.setSelectionRange(oResult.nCaretOffset, oResult.nCaretOffset);
+    markUnsaved();
+    rebuildLocationsAndGutterNow();
+  }
+
+  function cancelRenameMode() {
+    if (!oEditorState.bRenameModeActive) return;
+    const oRange = oEditorState.oWordRange;
+    oEditorState.bRenameModeActive = false;
+    hideRenameBox();
+    if (!oRange) return;
+    const sText = elEditor.value;
+    const sRestored = sText.slice(0, oRange.nStart) + oEditorState.sOriginalWord + sText.slice(oRange.nEnd);
+    oEditorState.sText = sRestored;
+    elEditor.value = sRestored;
+    const nCaret = oRange.nStart + oEditorState.sOriginalWord.length;
+    elEditor.setSelectionRange(nCaret, nCaret);
+    scheduleLocationRefresh();
+  }
+
+  // ---------------------------------------------------------------------
+  // §6.1/AC-5 Одиночний тап → goto, подвійний тап → rename
+  // ---------------------------------------------------------------------
+  function findGotoRefAtCaret(nCaret) {
+    const nLine = findLineByIndex(nCaret);
+    const nLineStart = aLineStart[nLine - 1];
+    const sLine = getLineText(nLine);
+    RE_GOTO_REF_LINE.lastIndex = 0;
+    let m;
+    while ((m = RE_GOTO_REF_LINE.exec(sLine))) {
+      const nQuoteOpen = sLine.indexOf("'", m.index);
+      const nRefStart = nLineStart + nQuoteOpen + 1;
+      const nRefEnd = nRefStart + m[1].length;
+      if (nCaret >= nRefStart && nCaret <= nRefEnd) {
+        return { sID: m[1] };
+      }
+    }
+    return null;
+  }
+
+  function performGotoIfApplicable(nCaret) {
+    if (oEditorState.bRenameModeActive) return;
+    const oRef = findGotoRefAtCaret(nCaret);
+    if (!oRef) return;
+    goToLocation_ByID(oRef.sID, { nCaretOffset: nCaret });
+  }
+
+  function onEditorClick() {
+    if (oEditorState.bRenameModeActive) {
+      const nCaret = elEditor.selectionStart;
+      const oRange = oEditorState.oWordRange;
+      if (oRange && nCaret >= oRange.nStart && nCaret <= oRange.nEnd) return; // клік у межах слова — лишаємось у режимі
+      commitRenameMode();
+      return;
+    }
+    if (nPendingGotoTimer) clearTimeout(nPendingGotoTimer);
+    const nCaret = elEditor.selectionStart;
+    nPendingGotoTimer = setTimeout(() => {
+      nPendingGotoTimer = null;
+      performGotoIfApplicable(nCaret);
+    }, 300);
+  }
+
+  function onEditorDblClick() {
+    if (nPendingGotoTimer) {
+      clearTimeout(nPendingGotoTimer);
+      nPendingGotoTimer = null;
+    }
+    startRenameMode();
+  }
+
+  // ---------------------------------------------------------------------
+  // §6.5 Автозаповнення gt'...'/gs'...'
+  // ---------------------------------------------------------------------
+  const RE_GOTO_CONTEXT = /\b(?:gt|gs)\s+'([^']*)$/;
+
+  function getGotoContext_ParsedByCaretPosition(sText, nCaretIndex) {
+    const nLine = findLineByIndex(nCaretIndex);
+    const nLineStart = aLineStart[nLine - 1];
+    const sBeforeCaretInLine = sText.slice(nLineStart, nCaretIndex);
+    const m = RE_GOTO_CONTEXT.exec(sBeforeCaretInLine);
+    if (!m) return null;
+    const sPrefix = m[1];
+    const nRangeEnd = nCaretIndex;
+    const nRangeStart = nCaretIndex - sPrefix.length;
+    return { sPrefix, nRangeStart, nRangeEnd };
+  }
+
+  function getSuggestionList_ParsedByPrefix(sPrefix, aLocation, nMax) {
+    nMax = nMax || 5;
+    const aStarts = [];
+    const aIncludes = [];
+    for (const oLoc of aLocation) {
+      if (oLoc.sID.startsWith(sPrefix)) aStarts.push(oLoc);
+      else if (oLoc.sID.includes(sPrefix)) aIncludes.push(oLoc);
+    }
+    return aStarts.concat(aIncludes).slice(0, nMax);
+  }
+
+  function setLocationID_ByGotoContext(sID, oGotoContext) {
+    const sText = oEditorState.sText;
+    const sAfter = sText.slice(oGotoContext.nRangeEnd);
+    const bHasClosingQuote = sAfter.startsWith("'");
+    const sInsert = sID + (bHasClosingQuote ? '' : "'");
+    const sResult = sText.slice(0, oGotoContext.nRangeStart) + sInsert + sText.slice(oGotoContext.nRangeEnd);
+    const nNewCaret = oGotoContext.nRangeStart + sID.length;
+    oEditorState.sText = sResult;
+    elEditor.value = sResult;
+    elEditor.setSelectionRange(nNewCaret, nNewCaret);
+    elEditor.focus();
+    markUnsaved();
+    rebuildLocationsAndGutterNow();
+  }
+
+  function updateGotoSuggestions() {
+    if (oEditorState.bRenameModeActive) { hideSuggestPanel(); return; }
+    if (document.activeElement !== elEditor) return;
+    const nCaret = elEditor.selectionStart;
+    if (nCaret !== elEditor.selectionEnd) { hideSuggestPanel(); return; }
+    const oContext = getGotoContext_ParsedByCaretPosition(oEditorState.sText, nCaret);
+    oEditorState.oGotoContext = oContext;
+    if (!oContext) { hideSuggestPanel(); return; }
+    const aSuggestion = getSuggestionList_ParsedByPrefix(oContext.sPrefix, oEditorState.aLocation, 5);
+    oEditorState.aSuggestion = aSuggestion;
+    if (!aSuggestion.length) { hideSuggestPanel(); return; }
+    renderSuggestPanel(aSuggestion, oContext);
+  }
+
+  function renderSuggestPanel(aSuggestion, oContext) {
+    elSuggestPanel.innerHTML = '';
+    for (const oLoc of aSuggestion) {
+      const btn = document.createElement('button');
+      btn.className = 'suggest-item';
+      btn.textContent = oLoc.sID;
+      btn.addEventListener('click', () => setLocationID_ByGotoContext(oLoc.sID, oContext));
+      elSuggestPanel.appendChild(btn);
+    }
+    elSuggestPanel.classList.add('open');
+    positionSuggestPanel();
+  }
+
+  function hideSuggestPanel() {
+    elSuggestPanel.classList.remove('open');
+    elSuggestPanel.innerHTML = '';
+  }
+
+  function positionSuggestPanel() {
+    if (!window.visualViewport) return;
+    const vv = window.visualViewport;
+    const nBottomInset = Math.max(0, window.innerHeight - vv.height - vv.offsetTop);
+    elSuggestPanel.style.bottom = nBottomInset + 'px';
+  }
+  if (window.visualViewport) {
+    window.visualViewport.addEventListener('resize', positionSuggestPanel);
+    window.visualViewport.addEventListener('scroll', positionSuggestPanel);
+  }
+
+  // ---------------------------------------------------------------------
+  // Меню (§6.2)
+  // ---------------------------------------------------------------------
+  function openMenu() {
+    oEditorState.bMenuOpen = true;
+    elMenuOverlay.classList.add('open');
+    renderMenuLocationList();
+  }
+  function closeMenu() {
+    oEditorState.bMenuOpen = false;
+    elMenuOverlay.classList.remove('open');
+  }
+  function toggleMenu() {
+    if (oEditorState.bMenuOpen) closeMenu(); else openMenu();
+  }
+
+  function renderMenuLocationList() {
+    elLocList.innerHTML = '';
+    if (!oEditorState.aLocation.length) {
+      const div = document.createElement('div');
+      div.id = 'locEmpty';
+      div.textContent = 'Локацій не знайдено';
+      elLocList.appendChild(div);
+      return;
+    }
+    for (const oLoc of oEditorState.aLocation) {
+      const btn = document.createElement('button');
+      btn.className = 'loc-item';
+      btn.textContent = oLoc.sID;
+      btn.addEventListener('click', () => {
+        closeMenu();
+        goToLocation_ByID(oLoc.sID);
+      });
+      elLocList.appendChild(btn);
+    }
+  }
+
+  elMenuOverlay.addEventListener('click', (e) => {
+    if (e.target === elMenuOverlay) closeMenu();
+  });
+  elBtnMenu.addEventListener('click', toggleMenu);
+
+  elGutter.addEventListener('click', (e) => {
+    // Номер рядка-декларації сам по собі не клікабельний — скролити до себе ж немає сенсу.
+    const elBack = e.target.closest('.gutter-row.back-line');
+    if (elBack) { goToNavBack(); return; }
+    const elRef = e.target.closest('.gutter-row.ref-line');
+    if (elRef) {
+      const nOriginCaret = parseInt(elRef.dataset.caret, 10);
+      goToLocation_ByID(elRef.dataset.ref, { nCaretOffset: nOriginCaret });
+      return;
+    }
+  });
+
+  // ---------------------------------------------------------------------
+  // §6.3 Теми
+  // ---------------------------------------------------------------------
+  function applyTheme() {
+    document.documentElement.setAttribute('data-theme', oEditorState.sTheme);
+    elBtnTheme.textContent = (oEditorState.sTheme === 'dark' ? '☀ Тема' : '☾ Тема');
+    const meta = document.querySelector('meta[name="theme-color"]');
+    if (meta) meta.setAttribute('content', oEditorState.sTheme === 'dark' ? '#111111' : '#f4f4f0');
+  }
+  function toggleTheme() {
+    oEditorState.sTheme = oEditorState.sTheme === 'dark' ? 'light' : 'dark';
+    applyTheme();
+    try { localStorage.setItem('qlTag.theme', oEditorState.sTheme); } catch (e) {}
+    // Меню лишається відкритим після тогла теми (рішення §10.1).
+  }
+  elBtnTheme.addEventListener('click', toggleTheme);
+
+  (function initTheme() {
+    let sSaved = null;
+    try { sSaved = localStorage.getItem('qlTag.theme'); } catch (e) {}
+    oEditorState.sTheme = (sSaved === 'light' || sSaved === 'dark') ? sSaved : 'dark';
+    applyTheme();
+  })();
+
+  // ---------------------------------------------------------------------
+  // §6.4 Файлові операції
+  // ---------------------------------------------------------------------
+  function loadText(sNewText, sName) {
+    oEditorState.sText = sNewText;
+    elEditor.value = sNewText;
+    if (sName) oEditorState.sFileName = sName;
+    elTopBarLabel.textContent = oEditorState.sFileName;
+    markSaved();
+    rebuildLocationsAndGutterNow();
+    elEditor.scrollTop = 0;
+  }
+
+  async function openFile() {
+    if ('showOpenFilePicker' in window) {
+      try {
+        const [handle] = await window.showOpenFilePicker({
+          types: [{ description: 'QSP/Text', accept: { 'text/plain': ['.qsp', '.txt'] } }],
+        });
+        const file = await handle.getFile();
+        const sContent = await file.text();
+        oEditorState.oFileHandle = handle;
+        loadText(sContent, file.name);
+        persistLastFileRecord();
+      } catch (e) {
+        if (e && e.name !== 'AbortError') console.warn('qlTag: не вдалося відкрити файл', e);
+      }
+    } else {
+      elFileInput.click();
+    }
+    closeMenu();
+  }
+
+  elFileInput.addEventListener('change', () => {
+    const file = elFileInput.files && elFileInput.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      oEditorState.oFileHandle = null;
+      loadText(String(reader.result || ''), file.name);
+      persistLastFileRecord();
+    };
+    reader.readAsText(file);
+    elFileInput.value = '';
+  });
+
+  async function saveFile_ByMenuAction() {
+    if (oEditorState.oFileHandle) {
+      try {
+        const writable = await oEditorState.oFileHandle.createWritable();
+        await writable.write(oEditorState.sText);
+        await writable.close();
+        markSaved();
+        await persistLastFileRecord();
+        return true;
+      } catch (e) {
+        console.warn('qlTag: запис у файл не вдався, використовую fallback-завантаження', e);
+      }
+    }
+    const blob = new Blob([oEditorState.sText], { type: 'text/plain' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = oEditorState.sFileName || 'quest.qsp';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+    markSaved();
+    await persistLastFileRecord();
+    return true;
+  }
+
+  elBtnOpen.addEventListener('click', openFile);
+  elBtnSave.addEventListener('click', async () => {
+    await saveFile_ByMenuAction();
+    closeMenu();
+  });
+  elBtnNew.addEventListener('click', () => {
+    if (oEditorState.bUnsavedChange) {
+      const bConfirmed = confirm('Є незбережені зміни. Створити новий файл і втратити їх?');
+      if (!bConfirmed) return;
+    }
+    oEditorState.oFileHandle = null;
+    oEditorState.sFileName = 'quest.qsp';
+    elTopBarLabel.textContent = '';
+    loadText('');
+    clearTimeout(nPersistDebounceTimer);
+    clearLastFileRecord();
+    closeMenu();
+  });
+
+  // ---------------------------------------------------------------------
+  // Відновлення останнього робочого файлу при запуску PWA (IndexedDB)
+  // ---------------------------------------------------------------------
+  // FileSystemFileHandle структурно клонований і зберігається як є; для
+  // fallback-режиму (Safari/iOS, немає File System Access API) живого
+  // handle немає — зберігаємо лише текстовий знімок і відновлюємо саме його.
+  // Дозвіл на handle (readwrite) не запитується мовчки при старті (браузер
+  // все одно вимагає жест користувача) — handle просто прив'язується назад
+  // до стану, і природний жест "Зберегти" сам ініціює за потреби переспитування.
+  const IDB_NAME = 'qlTagDB';
+  const IDB_STORE = 'lastFile';
+  const IDB_KEY = 'last';
+  let nPersistDebounceTimer = null;
+
+  function idbOpen() {
+    return new Promise((resolve, reject) => {
+      const req = indexedDB.open(IDB_NAME, 1);
+      req.onupgradeneeded = () => req.result.createObjectStore(IDB_STORE);
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => reject(req.error);
+    });
+  }
+
+  async function idbGet(sKey) {
+    const db = await idbOpen();
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction(IDB_STORE, 'readonly');
+      const req = tx.objectStore(IDB_STORE).get(sKey);
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => reject(req.error);
+    });
+  }
+
+  async function idbSet(sKey, oValue) {
+    const db = await idbOpen();
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction(IDB_STORE, 'readwrite');
+      tx.objectStore(IDB_STORE).put(oValue, sKey);
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
+    });
+  }
+
+  async function idbDel(sKey) {
+    const db = await idbOpen();
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction(IDB_STORE, 'readwrite');
+      tx.objectStore(IDB_STORE).delete(sKey);
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
+    });
+  }
+
+  async function persistLastFileRecord() {
+    if (!('indexedDB' in window)) return;
+    if (!oEditorState.sText && !oEditorState.oFileHandle) return;
+    try {
+      await idbSet(IDB_KEY, {
+        sFileName: oEditorState.sFileName,
+        oHandle: oEditorState.oFileHandle || null,
+        sTextSnapshot: oEditorState.sText,
+        bWasUnsaved: oEditorState.bUnsavedChange,
+      });
+    } catch (e) {
+      console.warn('qlTag: не вдалося зберегти знімок останнього файлу', e);
+    }
+  }
+
+  function schedulePersistLastFile() {
+    clearTimeout(nPersistDebounceTimer);
+    nPersistDebounceTimer = setTimeout(persistLastFileRecord, 2000);
+  }
+
+  async function clearLastFileRecord() {
+    if (!('indexedDB' in window)) return;
+    try { await idbDel(IDB_KEY); } catch (e) {}
+  }
+
+  // Повертає true, якщо щось справді відновлено (щоб не дублювати початковий rebuild).
+  async function restoreLastFileOnLaunch() {
+    if (!('indexedDB' in window)) return false;
+    try {
+      const rec = await idbGet(IDB_KEY);
+      if (!rec || !rec.sTextSnapshot) return false;
+      oEditorState.oFileHandle = rec.oHandle || null;
+      loadText(rec.sTextSnapshot, rec.sFileName || oEditorState.sFileName);
+      if (rec.bWasUnsaved) markUnsaved();
+      return true;
+    } catch (e) {
+      console.warn('qlTag: не вдалося відновити останній файл', e);
+      return false;
+    }
+  }
+
+  // ---------------------------------------------------------------------
+  // Дебаунсовані перерахунки при редагуванні / resize (§5, §9)
+  // ---------------------------------------------------------------------
+  function rebuildLocationsAndGutterNow() {
+    oEditorState.aLocation = getLocationList_ParsedByText(oEditorState.sText);
+    rebuildGutterLayout();
+    if (oEditorState.bMenuOpen) renderMenuLocationList();
+  }
+
+  function scheduleLocationRefresh() {
+    clearTimeout(nInputDebounceTimer);
+    nInputDebounceTimer = setTimeout(rebuildLocationsAndGutterNow, 300);
+  }
+
+  function scheduleGutterRelayout() {
+    clearTimeout(nResizeDebounceTimer);
+    nResizeDebounceTimer = setTimeout(rebuildGutterLayout, 150);
+  }
+
+  // ---------------------------------------------------------------------
+  // §6.7 Незбережені зміни / вихід
+  // ---------------------------------------------------------------------
+  function markUnsaved() {
+    oEditorState.bUnsavedChange = true;
+    if (!bHistoryGuardPushed) {
+      bHistoryGuardPushed = true;
+      history.pushState({ qlTagGuard: true }, '');
+    }
+  }
+  function markSaved() {
+    oEditorState.bUnsavedChange = false;
+    bHistoryGuardPushed = false;
+  }
+
+  window.addEventListener('popstate', () => {
+    if (oEditorState.bUnsavedChange) {
+      history.pushState({ qlTagGuard: true }, '');
+      showExitConfirm();
+    }
+  });
+
+  function showExitConfirm() {
+    elExitOverlay.classList.add('open');
+    openMenu();
+  }
+  function hideExitConfirm() {
+    elExitOverlay.classList.remove('open');
+  }
+  elBtnExitYes.addEventListener('click', async () => {
+    await saveFile_ByMenuAction();
+    hideExitConfirm();
+    history.back();
+  });
+  elBtnExitNo.addEventListener('click', () => {
+    markSaved();
+    hideExitConfirm();
+    history.back();
+  });
+
+  window.addEventListener('beforeunload', (e) => {
+    if (oEditorState.bUnsavedChange) {
+      e.preventDefault();
+      e.returnValue = '';
+    }
+  });
+
+  // ---------------------------------------------------------------------
+  // Слухачі редактора
+  // ---------------------------------------------------------------------
+  elEditor.addEventListener('input', () => {
+    oEditorState.sText = elEditor.value;
+    markUnsaved();
+    if (oEditorState.bRenameModeActive) {
+      updateRenameModeOnInput();
+    } else {
+      updateGotoSuggestions();
+    }
+    scheduleLocationRefresh();
+    scheduleGutterRelayout();
+    schedulePersistLastFile();
+  });
+
+  elEditor.addEventListener('scroll', syncGutterScroll);
+
+  elEditor.addEventListener('click', onEditorClick);
+  elEditor.addEventListener('dblclick', onEditorDblClick);
+
+  elEditor.addEventListener('blur', () => {
+    if (oEditorState.bRenameModeActive) commitRenameMode();
+    hideSuggestPanel();
+  });
+
+  elEditor.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && oEditorState.bRenameModeActive) {
+      e.preventDefault();
+      cancelRenameMode();
+    }
+  });
+
+  document.addEventListener('selectionchange', () => {
+    if (document.activeElement !== elEditor) return;
+    if (!oEditorState.bRenameModeActive) updateGotoSuggestions();
+  });
+
+  document.addEventListener('click', (e) => {
+    if (!oEditorState.bRenameModeActive) return;
+    if (elEditor.contains(e.target)) return; // клік у textarea оброблено окремо
+    commitRenameMode();
+  }, true);
+
+  window.addEventListener('resize', scheduleGutterRelayout);
+
+  // ---------------------------------------------------------------------
+  // Service worker (§7 PWA)
+  // ---------------------------------------------------------------------
+  if ('serviceWorker' in navigator) {
+    window.addEventListener('load', () => {
+      navigator.serviceWorker.register('sw.js').catch((e) => console.warn('qlTag: SW не зареєстровано', e));
+    });
+  }
+
+  // ---------------------------------------------------------------------
+  // Ініціалізація
+  // ---------------------------------------------------------------------
+  restoreLastFileOnLaunch().then((bRestored) => {
+    if (!bRestored) rebuildLocationsAndGutterNow();
+  });
+})();
+</script>
+</body>
+</html>
