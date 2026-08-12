@@ -94,6 +94,20 @@
     white-space: nowrap;
     text-overflow: ellipsis;
   }
+  #btnUndo {
+    display: none;
+    flex: 0 0 var(--gutter-width);
+    width: var(--gutter-width);
+    min-width: 0;
+    min-height: 32px;
+    align-items: center;
+    justify-content: center;
+    font-size: 18px;
+    line-height: 1;
+  }
+  #btnUndo.visible {
+    display: flex;
+  }
 
   /* --- Область редактора: gutter + textarea --- */
   #editorArea {
@@ -307,35 +321,6 @@
   /* danger стосується лише кольору тексту й іконки — сам вигляд панелі (фон/бордер) не міняється */
   #infoPanel.danger { color: var(--danger); }
 
-  /* --- Кастомний confirm виходу (§6.7) --- */
-  #exitOverlay {
-    display: none;
-    position: fixed;
-    inset: 0;
-    background: color-mix(in srgb, black 45%, transparent);
-    align-items: center;
-    justify-content: center;
-    z-index: 30;
-  }
-  #exitOverlay.open { display: flex; }
-  #exitDialog {
-    background: var(--bg);
-    color: var(--fg);
-    border: 1px solid color-mix(in srgb, var(--fg) 35%, transparent);
-    border-radius: 4px;
-    padding: 18px;
-    width: min(320px, 88vw);
-    text-align: center;
-  }
-  #exitDialog p { margin: 0 0 16px 0; font-size: 15px; }
-  #exitDialog .row { display: flex; gap: 10px; justify-content: center; }
-  #exitDialog button {
-    flex: 1;
-    padding: 10px 0;
-    border: 1px solid var(--fg);
-    border-radius: 3px;
-  }
-  #exitDialog button:active { background: color-mix(in srgb, var(--fg) 15%, transparent); }
 </style>
 </head>
 <body>
@@ -344,6 +329,7 @@
   <div id="topBar">
     <button id="btnMenu" aria-label="Меню">☰</button>
     <div id="topBarLabel"></div>
+    <button id="btnUndo" aria-label="Відмінити останню зміну">←</button>
   </div>
 
   <div id="editorArea">
@@ -358,7 +344,7 @@
   <div id="menuOverlay">
     <div id="menuPanel">
       <button class="menu-btn" id="btnOpen">Відкрити</button>
-      <button class="menu-btn" id="btnSave">Зберегти</button>
+      <button class="menu-btn" id="btnSave">Зберегти у файл</button>
       <button class="menu-btn" id="btnNew">Новий файл</button>
       <button class="menu-btn" id="btnTheme">☾ Тема</button>
       <!-- <hr id="menuHr"> -->
@@ -372,16 +358,6 @@
   <div id="infoPanel">
     <span class="info-icon" id="infoPanelIcon">i</span>
     <span class="info-text" id="infoPanelText"></span>
-  </div>
-
-  <div id="exitOverlay">
-    <div id="exitDialog">
-      <p>Бажаєте зберегти зміни?</p>
-      <div class="row">
-        <button id="btnExitYes">Так</button>
-        <button id="btnExitNo">Ні</button>
-      </div>
-    </div>
   </div>
 
   <input type="file" id="fileInput" accept=".qsp,.txt" style="display:none">
@@ -409,10 +385,54 @@
     bUnsavedChange: false,
   };
 
-  let bHistoryGuardPushed = false;
   let nInputDebounceTimer = null;
   let nResizeDebounceTimer = null;
   let nInfoPanelTimer = null;
+
+  // Одноступеневий undo: не повний текст "до", а лише diff останньої зміни —
+  // { nStart, sOldPart, sNewPart } (перезаписується на кожному input). Замість
+  // копії всього файлу тримаємо тільки змінений фрагмент і його позицію;
+  // оригінал відновлюється підстановкою sOldPart назад у поточний текст.
+  let oUndoDiff = null;
+
+  // Мінімальний diff двох рядків через спільний префікс/суфікс: повертає
+  // { nStart, sOldPart, sNewPart } — де саме розходяться sOld і sNew.
+  function getTextDiff_ByOldAndNewText(sOld, sNew) {
+    const nMaxPrefix = Math.min(sOld.length, sNew.length);
+    let nStart = 0;
+    while (nStart < nMaxPrefix && sOld[nStart] === sNew[nStart]) nStart++;
+    let nOldEnd = sOld.length;
+    let nNewEnd = sNew.length;
+    while (nOldEnd > nStart && nNewEnd > nStart && sOld[nOldEnd - 1] === sNew[nNewEnd - 1]) {
+      nOldEnd--;
+      nNewEnd--;
+    }
+    return { nStart, sOldPart: sOld.slice(nStart, nOldEnd), sNewPart: sNew.slice(nStart, nNewEnd) };
+  }
+
+  // Хеш тексту на момент останнього markSaved() (відкриття/створення/
+  // збереження файлу) — щоб undo, який повертає текст до цього стану, знову
+  // позначав файл як збережений.
+  let nSavedTextHash = hashText_Fnv1a('');
+
+  // Повний знімок тексту на момент останнього markSaved() — потрібен, щоб
+  // "Ні" в діалозі "Бажаєте зберегти зміни?" міг справді відкотити правки,
+  // а не лише зняти прапорець "незбережено" (§6.7). У fallback-режимі
+  // (Safari/iOS, немає File System Access API) живого file handle немає,
+  // тож єдине джерело оригіналу — цей знімок у пам'яті.
+  let sSavedText = '';
+
+  // FNV-1a, 32-біт — швидкий детермінований хеш рядка. Колізія теоретично
+  // можлива, але для типового обсягу тексту квесту практично неймовірна;
+  // ризик прийнятний для порівняння "чи текст збігається зі збереженим".
+  function hashText_Fnv1a(s) {
+    let h = 0x811c9dc5;
+    for (let i = 0; i < s.length; i++) {
+      h ^= s.charCodeAt(i);
+      h = Math.imul(h, 0x01000193);
+    }
+    return h >>> 0;
+  }
 
   // Одноступеневий "поворот назад" після переходу по gt/gs (не для переходів з меню):
   // { nCaretOffset, sTargetID } — де sTargetID = локація, на яку щойно перейшли.
@@ -434,6 +454,7 @@
   const elRenameBox = document.getElementById('renameBox');
   const elTextareaWrap = document.getElementById('textareaWrap');
   const elBtnMenu = document.getElementById('btnMenu');
+  const elBtnUndo = document.getElementById('btnUndo');
   const elMenuOverlay = document.getElementById('menuOverlay');
   const elMenuPanel = document.getElementById('menuPanel');
   const elBtnOpen = document.getElementById('btnOpen');
@@ -446,9 +467,6 @@
   const elInfoPanelIcon = document.getElementById('infoPanelIcon');
   const elInfoPanelText = document.getElementById('infoPanelText');
   const elFileInput = document.getElementById('fileInput');
-  const elExitOverlay = document.getElementById('exitOverlay');
-  const elBtnExitYes = document.getElementById('btnExitYes');
-  const elBtnExitNo = document.getElementById('btnExitNo');
   const elTopBarLabel = document.getElementById('topBarLabel');
 
   // ---------------------------------------------------------------------
@@ -939,7 +957,7 @@
     elInfoPanel.classList.add('open');
     positionInfoPanel();
     if (nInfoPanelTimer) clearTimeout(nInfoPanelTimer);
-    nInfoPanelTimer = setTimeout(hideInfoPanel, bDanger ? 5000 : 2500);
+    nInfoPanelTimer = setTimeout(hideInfoPanel, 5000 );
   }
 
   function hideInfoPanel() {
@@ -1035,7 +1053,7 @@
     oEditorState.sText = sNewText;
     elEditor.value = sNewText;
     if (sName) oEditorState.sFileName = sName;
-    elTopBarLabel.textContent = oEditorState.sFileName;
+    oUndoDiff = null;
     markSaved();
     rebuildLocationsAndGutterNow();
     elEditor.scrollTop = 0;
@@ -1113,7 +1131,6 @@
     }
     oEditorState.oFileHandle = null;
     oEditorState.sFileName = 'quest.qsp';
-    elTopBarLabel.textContent = '';
     loadText('');
     clearTimeout(nPersistDebounceTimer);
     clearLastFileRecord();
@@ -1234,57 +1251,77 @@
   }
 
   // ---------------------------------------------------------------------
-  // §6.7 Незбережені зміни / вихід
+  // §6.7 Незбережені зміни
   // ---------------------------------------------------------------------
+  // Зірочка біля назви файлу в топбарі + видимість кнопки "←", якщо є
+  // незбережені зміни. Це єдиний сигнал користувачу про стан файлу: буфер
+  // редактора завжди автозберігається в IndexedDB (§ "Відновлення останнього
+  // робочого файлу"), тож зірочка означає не "дані можуть загубитись", а
+  // "оригінальний .qsp-файл на диску ще не переписаний — редактор працює зі
+  // знімком у локальній БД, поки не натиснуто «Зберегти у файл»".
+  function updateTopBarLabel() {
+    const bUnsaved = oEditorState.bUnsavedChange;
+    elTopBarLabel.textContent = oEditorState.sFileName + (bUnsaved ? ' *' : '');
+    elTopBarLabel.title = bUnsaved
+      ? 'Оригінальний файл не збережено — показано дані з локального знімка'
+      : '';
+    elBtnUndo.classList.toggle('visible', bUnsaved);
+  }
+
   function markUnsaved() {
     oEditorState.bUnsavedChange = true;
-    if (!bHistoryGuardPushed) {
-      bHistoryGuardPushed = true;
-      history.pushState({ qlTagGuard: true }, '');
-    }
+    updateTopBarLabel();
   }
   function markSaved() {
     oEditorState.bUnsavedChange = false;
-    bHistoryGuardPushed = false;
+    sSavedText = oEditorState.sText;
+    nSavedTextHash = hashText_Fnv1a(oEditorState.sText);
+    updateTopBarLabel();
   }
 
-  window.addEventListener('popstate', () => {
-    if (oEditorState.bUnsavedChange) {
-      history.pushState({ qlTagGuard: true }, '');
-      showExitConfirm();
-    }
-  });
-
-  function showExitConfirm() {
-    elExitOverlay.classList.add('open');
-    openMenu();
+  // Одноступеневий "←" undo: підставляє sOldPart назад на місце sNewPart
+  // у поточному тексті (oUndoDiff оновлюється на кожному input). Якщо хеш
+  // відновленого тексту збігається з хешем на момент останнього збереження —
+  // файл знову позначається як збережений (зірочка й кнопка "←" зникають),
+  // інакше лишається незбереженим.
+  function undoLastChange() {
+    if (oUndoDiff === null) return;
+    const oDiff = oUndoDiff;
+    oUndoDiff = null;
+    const sCurrent = oEditorState.sText;
+    const sRestored = sCurrent.slice(0, oDiff.nStart) + oDiff.sOldPart +
+      sCurrent.slice(oDiff.nStart + oDiff.sNewPart.length);
+    oEditorState.sText = sRestored;
+    elEditor.value = sRestored;
+    const nCaret = oDiff.nStart + oDiff.sOldPart.length;
+    elEditor.setSelectionRange(nCaret, nCaret);
+    if (hashText_Fnv1a(sRestored) === nSavedTextHash) markSaved(); else markUnsaved();
+    rebuildLocationsAndGutterNow();
   }
-  function hideExitConfirm() {
-    elExitOverlay.classList.remove('open');
-  }
-  elBtnExitYes.addEventListener('click', async () => {
-    await saveFile_ByMenuAction();
-    hideExitConfirm();
-    history.back();
-  });
-  elBtnExitNo.addEventListener('click', () => {
-    markSaved();
-    hideExitConfirm();
-    history.back();
-  });
+  elBtnUndo.addEventListener('click', undoLastChange);
 
-  window.addEventListener('beforeunload', (e) => {
-    if (oEditorState.bUnsavedChange) {
-      e.preventDefault();
-      e.returnValue = '';
-    }
+  // Немає ані кастомної модалки "Бажаєте зберегти зміни?", ані нативного
+  // beforeunload-попередження при закритті вкладки/навігації назад: буфер
+  // (разом із прапорцем bUnsavedChange) і так безперервно автозберігається
+  // в IndexedDB (нижче), тож вихід нічого не губить — стан відновиться при
+  // наступному запуску. Єдине, що не синхронізується автоматично — сам
+  // .qsp-файл на диску; про це сигналізує зірочка в topBarLabel.
+  function flushPersistLastFile() {
+    clearTimeout(nPersistDebounceTimer);
+    persistLastFileRecord();
+  }
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) flushPersistLastFile();
   });
+  window.addEventListener('pagehide', flushPersistLastFile);
 
   // ---------------------------------------------------------------------
   // Слухачі редактора
   // ---------------------------------------------------------------------
   elEditor.addEventListener('input', () => {
-    oEditorState.sText = elEditor.value;
+    const sNewText = elEditor.value;
+    oUndoDiff = getTextDiff_ByOldAndNewText(oEditorState.sText, sNewText);
+    oEditorState.sText = sNewText;
     markUnsaved();
     if (oEditorState.bRenameModeActive) {
       updateRenameModeOnInput();
@@ -1297,6 +1334,13 @@
   });
 
   elEditor.addEventListener('scroll', syncGutterScroll);
+  elEditor.addEventListener('scroll', () => {
+    // рамка перейменування — sibling-елемент textarea, тому не скролиться
+    // разом з текстом; перепозиціонуємо її при кожному скролі (див. §6.6).
+    if (oEditorState.bRenameModeActive && oEditorState.oWordRange) {
+      positionRenameBox(oEditorState.oWordRange.nStart, oEditorState.oWordRange.nEnd);
+    }
+  });
 
   elEditor.addEventListener('click', onEditorClick);
   elEditor.addEventListener('dblclick', onEditorDblClick);
