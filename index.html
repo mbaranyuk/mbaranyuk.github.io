@@ -108,6 +108,18 @@
   #btnUndo.visible {
     display: flex;
   }
+  #btnInsertLocation,
+  #btnHelp {
+    flex: 0 0 var(--gutter-width);
+    width: var(--gutter-width);
+    min-width: 0;
+    min-height: 32px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 18px;
+    line-height: 1;
+  }
 
   /* --- Область редактора: gutter + textarea ---
      Єдиний нативний scroll-контейнер для gutter і textarea (§6.1/§6.6):
@@ -263,6 +275,59 @@
     color: color-mix(in srgb, var(--fg) 45%, transparent);
   }
 
+  /* --- Панель довідки "?" (чіт-шіт команд QSP) — той самий лівий формат, що й бічне меню --- */
+  #helpOverlay {
+    display: none;
+    position: fixed;
+    inset: 0;
+    background: color-mix(in srgb, black 40%, transparent);
+    z-index: 20;
+  }
+  #helpOverlay.open { display: block; }
+  #helpPanel {
+    position: absolute;
+    top: 0;
+    left: 0;
+    bottom: 0;
+    width: min(320px, 86vw);
+    background: var(--bg);
+    color: var(--fg);
+    border-right: 1px solid color-mix(in srgb, var(--fg) 25%, transparent);
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+  #helpPanelHeader {
+    padding: 14px 16px;
+    font-size: 12px;
+    letter-spacing: 0.04em;
+    color: color-mix(in srgb, var(--fg) 55%, transparent);
+    border-bottom: 1px solid color-mix(in srgb, var(--fg) 12%, transparent);
+  }
+  #helpList {
+    flex: 1 1 auto;
+    overflow-y: auto;
+    padding-bottom: 8px;
+  }
+  .help-item {
+    padding: 9px 16px;
+    border-bottom: 1px solid color-mix(in srgb, var(--fg) 10%, transparent);
+  }
+  .help-item .help-cmd {
+    display: block;
+    font-size: 13px;
+    font-weight: 700;
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+  .help-item .help-desc {
+    display: block;
+    margin-top: 2px;
+    font-size: 12px;
+    color: color-mix(in srgb, var(--fg) 60%, transparent);
+    white-space: normal;
+  }
+
   /* --- Панель автозаповнення gt'...'/gs'...' (§6.5) --- */
   #suggestPanel {
     display: none;
@@ -335,6 +400,8 @@
     <button id="btnMenu" aria-label="Меню">☰</button>
     <div id="topBarLabel"></div>
     <button id="btnUndo" aria-label="Відмінити останню зміну">←</button>
+    <button id="btnInsertLocation" aria-label="Вставити шаблон локації">+</button>
+    <button id="btnHelp" aria-label="Довідка">?</button>
   </div>
 
   <div id="editorArea">
@@ -355,6 +422,13 @@
       <!-- <hr id="menuHr"> -->
       <div id="locListLabel">Локації:</div>
       <div id="locList"></div>
+    </div>
+  </div>
+
+  <div id="helpOverlay">
+    <div id="helpPanel">
+      <div id="helpPanelHeader">Довідка QSP</div>
+      <div id="helpList"></div>
     </div>
   </div>
 
@@ -468,6 +542,10 @@
   const elTextareaWrap = document.getElementById('textareaWrap');
   const elBtnMenu = document.getElementById('btnMenu');
   const elBtnUndo = document.getElementById('btnUndo');
+  const elBtnInsertLocation = document.getElementById('btnInsertLocation');
+  const elBtnHelp = document.getElementById('btnHelp');
+  const elHelpOverlay = document.getElementById('helpOverlay');
+  const elHelpList = document.getElementById('helpList');
   const elMenuOverlay = document.getElementById('menuOverlay');
   const elMenuPanel = document.getElementById('menuPanel');
   const elBtnOpen = document.getElementById('btnOpen');
@@ -539,6 +617,43 @@
       applyNavBackMarker();
     }
     goToLine(oLoc.nLine);
+  }
+
+  // ---------------------------------------------------------------------
+  // Кнопка "+": вставка шаблону нової локації в місце курсора (заміняє
+  // виділення, якщо воно є). ID "new" одразу виділяється в редакторі,
+  // щоб користувач міг відразу набрати власну назву локації.
+  // ---------------------------------------------------------------------
+  const DEFAULT_LOCATION_BLOCK = 'Location: "new"\n' +
+    '~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n' +
+    'Location description:\n' +
+    '\n' +
+    '\tтекст сцени\n' +
+    '\n' +
+    'Location actions:\n' +
+    '\n' +
+    '\tдія_сцени:\n' +
+    '\t\tgt \'_start\'\n' +
+    '\n' +
+    '------------ End of location: "new" ------------';
+  const LOCATION_ID_OFFSET = 'Location: "'.length;
+
+  function insertLocationTemplate() {
+    if (oEditorState.bRenameModeActive) commitRenameMode();
+    const nStart = elEditor.selectionStart;
+    const nEnd = elEditor.selectionEnd;
+    const sText = oEditorState.sText;
+    const sResult = sText.slice(0, nStart) + DEFAULT_LOCATION_BLOCK + sText.slice(nEnd);
+    oEditorState.sText = sResult;
+    elEditor.value = sResult;
+    // preventScroll: без цього браузер сам скролить #editorArea до курсора
+    // ще до rebuildGutterLayout (нижче), коли висота textarea не перерахована
+    // під нову довжину тексту, — і їде в самий кінець (паразитний скрол).
+    elEditor.focus({ preventScroll: true });
+    const nIdStart = nStart + LOCATION_ID_OFFSET;
+    elEditor.setSelectionRange(nIdStart, nIdStart + 'new'.length);
+    markUnsaved();
+    rebuildLocationsAndGutterNow();
   }
 
   // ---------------------------------------------------------------------
@@ -996,6 +1111,7 @@
   // Меню (§6.2)
   // ---------------------------------------------------------------------
   function openMenu() {
+    closeHelp();
     oEditorState.bMenuOpen = true;
     elMenuOverlay.classList.add('open');
     renderMenuLocationList();
@@ -1007,6 +1123,80 @@
   function toggleMenu() {
     if (oEditorState.bMenuOpen) closeMenu(); else openMenu();
   }
+
+  // ---------------------------------------------------------------------
+  // Панель довідки "?" — структурно як меню (overlay + прокручуваний
+  // список), але праворуч, і без дій: лише статичний чіт-шіт основних
+  // команд/ключових слів текстового QSP (§5 регулярки цього файлу
+  // розпізнають лише "# ID"/"Location:"/gt/gs, тож довідка обмежена ними
+  // й найпоширенішими командами формату, без прив'язки до конкретного файлу).
+  // ---------------------------------------------------------------------
+  // Список звірений на реальному квесті tools/qsp2ink/game.copy.uk.txt —
+  // звідти ж виправлено помилку в попередній версії: рядок, що починається
+  // з "-", у реальних квестах це репліка діалогу (стилістичне тире), а не
+  // коментар; справжній коментар у QSP — "!".
+  const aHelpCheatSheet = [
+    { sCmd: '# ID', sDesc: 'Початок локації (класичний формат)' },
+    { sCmd: 'Location: "ID"', sDesc: 'Початок локації (decompiled формат)' },
+    { sCmd: "gt 'ID'", sDesc: 'Перехід на локацію, без повернення' },
+    { sCmd: "gs 'ID', арг1, арг2", sDesc: 'Виклик локації як підпрограми, з аргументами й поверненням' },
+    { sCmd: 'end', sDesc: 'Повернення з підпрограми, викликаної через gs' },
+    { sCmd: '$args[0], args[1]', sDesc: "Аргументи, передані через gs 'ID', арг1, арг2" },
+    { sCmd: "act 'Назва': команда", sDesc: 'Однорядкова дія (пункт вибору) для гравця' },
+    { sCmd: "act 'Назва':\n...\nend", sDesc: 'Багаторядкова дія для гравця' },
+    { sCmd: "delact 'Назва'", sDesc: 'Видалити дію зі списку за назвою' },
+    { sCmd: 'if (умова): команда', sDesc: 'Умова в один рядок' },
+    { sCmd: 'if (умова):\n...\nelse:\n...\nend', sDesc: 'Умовний блок у кілька рядків' },
+    { sCmd: 'iif (умова, так, ні)', sDesc: 'Інлайн-умова: повертає одне з двох значень' },
+    { sCmd: 'var = вираз', sDesc: 'Присвоєння числовій змінній (можна й з set)' },
+    { sCmd: '$var = вираз', sDesc: "Присвоєння рядковій змінній (префікс '$')" },
+    { sCmd: '<<var>>, <<$var>>', sDesc: 'Підстановка значення змінної прямо в текст' },
+    { sCmd: 'rand(a, b)', sDesc: 'Випадкове ціле число в діапазоні [a, b]' },
+    { sCmd: "input('запит')", sDesc: 'Запит рядка тексту від гравця' },
+    { sCmd: ":мітка\njump 'мітка'", sDesc: 'Мітка й перехід у межах поточної локації' },
+    { sCmd: 'pl текст', sDesc: 'Вивести рядок тексту з переходом на новий рядок' },
+    { sCmd: '*pl текст', sDesc: 'Вивести текст новим абзацом (з відступом)' },
+    { sCmd: 'p текст', sDesc: 'Додати текст без переходу на новий рядок' },
+    { sCmd: 'nl', sDesc: 'Порожній рядок' },
+    { sCmd: 'clr', sDesc: 'Очистити текст локації' },
+    { sCmd: 'cla', sDesc: 'Очистити список дій' },
+    { sCmd: '! коментар', sDesc: 'Рядок-коментар (ігнорується виконанням)' },
+    { sCmd: "xgt 'ID'", sDesc: 'Перехід з очищенням стека переходів (без "назад")' },
+    { sCmd: "func('ID', арг1, …)", sDesc: 'Виклик локації як функції; результат — у result/$result' },
+  ];
+
+  function renderHelpPanel() {
+    elHelpList.innerHTML = '';
+    for (const oItem of aHelpCheatSheet) {
+      const div = document.createElement('div');
+      div.className = 'help-item';
+      const elCmd = document.createElement('span');
+      elCmd.className = 'help-cmd';
+      elCmd.textContent = oItem.sCmd;
+      const elDesc = document.createElement('span');
+      elDesc.className = 'help-desc';
+      elDesc.textContent = oItem.sDesc;
+      div.appendChild(elCmd);
+      div.appendChild(elDesc);
+      elHelpList.appendChild(div);
+    }
+  }
+  function openHelp() {
+    closeMenu();
+    renderHelpPanel();
+    elHelpOverlay.classList.add('open');
+  }
+  function closeHelp() {
+    elHelpOverlay.classList.remove('open');
+  }
+  function toggleHelp() {
+    if (elHelpOverlay.classList.contains('open')) closeHelp(); else openHelp();
+  }
+  elHelpOverlay.addEventListener('click', (e) => {
+    if (e.target === elHelpOverlay) closeHelp();
+  });
+  elBtnHelp.addEventListener('click', toggleHelp);
+  elBtnInsertLocation.addEventListener('click', insertLocationTemplate);
 
   function renderMenuLocationList() {
     elLocList.innerHTML = '';
@@ -1386,6 +1576,10 @@
   document.addEventListener('selectionchange', () => {
     if (document.activeElement !== elEditor) return;
     if (!oEditorState.bRenameModeActive) updateGotoSuggestions();
+  });
+
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && elHelpOverlay.classList.contains('open')) closeHelp();
   });
 
   document.addEventListener('click', (e) => {
